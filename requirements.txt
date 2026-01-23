@@ -1,1 +1,8 @@
 streamlit
+pandas
+us
+census
+scikit-learn
+google-generativeai
+matplotlib
+seaborn

@@ -19,8 +19,8 @@ if "CENSUS_API_KEY" not in st.secrets or "GOOGLE_API_KEY" not in st.secrets:
 c = Census(st.secrets["CENSUS_API_KEY"])
 genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 
-# Use Gemini 1.5 Flash (Note: '2.5' mentioned in prompt likely refers to 1.5 or the upcoming 2.0. Using 1.5 Flash as stable standard)
-model = genai.GenerativeModel('gemini-1.5-flash')
+# 
+model = genai.GenerativeModel('gemini-2.5-flash')
 
 # ACS 5-Year Variables (2021 is the standard stable vintage for most libraries)
 # B01003_001E: Total Population

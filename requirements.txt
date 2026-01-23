@@ -1,7 +1,7 @@
 streamlit
+pandas
 census
 us
-pandas
 scikit-learn
 plotly
 google-generativeai

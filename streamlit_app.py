@@ -111,11 +111,12 @@ def generate_personas(summary_df, state):
     # Setup Gemini
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
     
-    # Using the specific template requested
+    # --- UPDATED MODEL CONFIGURATION ---
     model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash",
+        model_name="gemini-2.0-flash-exp",
         system_instruction="You are a demographic expert. Your goal is to create creative, distinct, and descriptive personas for population clusters based on their median age and income.",
-        tools=[{"google_search_retrieval": {"dynamic_retrieval_config": {"mode": "unspecified"}}}]  # Fallback
+        # The Fix: Changed 'google_search_retrieval' to 'google_search'
+        tools=[{"google_search": {}}] 
     )
     
     # Construct the prompt
@@ -141,7 +142,7 @@ def generate_personas(summary_df, state):
         except Exception as e:
             st.error(f"GenAI Error: {e}")
             return None
-
+            
 # Generate Personas
 ai_response_text = generate_personas(cluster_summary, selected_state_name)
 

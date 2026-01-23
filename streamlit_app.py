@@ -5,6 +5,7 @@ from us import states
 from sklearn.cluster import KMeans
 import plotly.express as px
 import google.generativeai as genai
+import time
 
 # --- Configuration & Setup ---
 st.set_page_config(page_title="Census Demographic Clusters", layout="wide")
@@ -17,7 +18,6 @@ if "CENSUS_API_KEY" not in st.secrets or "GOOGLE_API_KEY" not in st.secrets:
 # Initialize APIs
 c = Census(st.secrets["CENSUS_API_KEY"])
 genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-
 model = genai.GenerativeModel('gemini-2.5-flash')
 
 # ACS 5-Year Variables
@@ -28,8 +28,7 @@ CENSUS_VARS = {
 }
 
 # --- Style Mapping ---
-# Pairs of (Plotly Hex Color, Matching Emoji)
-# These align with Plotly's default qualitative sequence logic
+# Forces strict color matching between Plotly and the Emojis
 CLUSTER_STYLE = [
     {'color': '#636EFA', 'emoji': '🔵'}, # Blue
     {'color': '#EF553B', 'emoji': '🔴'}, # Red
@@ -42,6 +41,7 @@ CLUSTER_STYLE = [
 ]
 
 # --- Helper Functions ---
+
 @st.cache_data
 def get_census_data(state_fips):
     """Fetches county-level data for a specific state."""
@@ -54,23 +54,28 @@ def get_census_data(state_fips):
         )
         df = pd.DataFrame(data)
         df.rename(columns=CENSUS_VARS, inplace=True)
+        
         cols_to_numeric = ['population', 'median_income', 'median_age']
         for col in cols_to_numeric:
             df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+        # Filter invalid data
         df = df[(df['median_income'] > 0) & (df['median_age'] > 0) & (df['population'] > 0)]
         return df
     except Exception as e:
         st.error(f"Error fetching census data: {e}")
         return pd.DataFrame()
 
-def generate_persona(cluster_stats):
+# Added caching to prevent hitting API limits on re-runs
+@st.cache_data(show_spinner=False)
+def generate_persona(avg_income, avg_age, avg_pop):
     """Uses Gemini to generate a persona based on cluster statistics."""
-    avg_income = cluster_stats['median_income']
-    avg_age = cluster_stats['median_age']
-    avg_pop = cluster_stats['population']
     
+    # 1. Rate Limit Protection: Pause to avoid 429 errors
+    time.sleep(1.5) 
+
     prompt = f"""
-    You are a data storyteller. I have identified a demographic cluster of counties with the following average statistics:
+    You are a data storyteller. I have identified a demographic cluster of counties with:
     - Average Median Household Income: ${avg_income:,.0f}
     - Average Median Age: {avg_age:.1f} years old
     - Average County Population: {avg_pop:,.0f} people
@@ -83,7 +88,8 @@ def generate_persona(cluster_stats):
         response = model.generate_content(prompt)
         return response.text.strip()
     except Exception as e:
-        return f"Name: Cluster {cluster_stats['cluster']} | Description: AI generation failed. {e}"
+        # Return a safe error string so the app doesn't crash
+        return f"Name: Cluster Unknown | Description: AI Error: {str(e)}"
 
 # --- UI Layout ---
 st.title("🇺🇸 AI-Powered Census Clustering")
@@ -115,26 +121,25 @@ if run_btn and selected_state:
             # 1. Run KMeans
             X = df_filtered[['median_income', 'median_age']]
             kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-            # We sort the labels so that similar runs might keep consistent colors, though not guaranteed
             df_filtered['cluster'] = kmeans.fit_predict(X)
 
             # 2. Generate AI Personas & Prepare Metadata FIRST
-            # We need the names *before* we graph so the legend is correct
             cluster_stats = df_filtered.groupby('cluster')[['median_income', 'median_age', 'population']].mean().reset_index()
-            
-            cluster_metadata = {} # To store name, desc, emoji for the UI loop later
+            cluster_metadata = {} 
             
             # Progress bar for AI generation
-            progress_text = "Generating AI personas for clusters..."
+            progress_text = "Generating AI personas (with rate limiting)..."
             my_bar = st.progress(0, text=progress_text)
 
             for index, row in cluster_stats.iterrows():
-                # Get the style based on index (modulo to prevent index error if > 8)
+                # Assign Style based on index
                 style_idx = index % len(CLUSTER_STYLE)
                 emoji = CLUSTER_STYLE[style_idx]['emoji']
                 
-                # Generate text
-                raw_text = generate_persona(row)
+                # Call AI (Cached)
+                raw_text = generate_persona(row['median_income'], row['median_age'], row['population'])
+                
+                # Parse Result
                 try:
                     name_part, desc_part = raw_text.split('|')
                     name = name_part.replace("Name:", "").strip()
@@ -143,7 +148,6 @@ if run_btn and selected_state:
                     name = f"Cluster {row['cluster']}"
                     desc = raw_text
                 
-                # Store metadata
                 cluster_metadata[row['cluster']] = {
                     'name': name,
                     'desc': desc,
@@ -156,8 +160,10 @@ if run_btn and selected_state:
             my_bar.empty()
 
             # 3. Map AI Names back to DataFrame for Plotting
-            # This ensures the legend uses the AI Name
             df_filtered['persona_name'] = df_filtered['cluster'].map(lambda x: cluster_metadata[x]['name'])
+            
+            # Sort to ensure colors align with the legend order
+            df_filtered = df_filtered.sort_values(by='cluster')
             
             # Create columns for layout
             col1, col2 = st.columns([2, 1])
@@ -166,20 +172,17 @@ if run_btn and selected_state:
             with col1:
                 st.subheader("Demographic Clusters")
                 
-                # Sort dataframe by cluster so the legend order matches the color list order
-                df_filtered = df_filtered.sort_values(by='cluster')
-
                 fig = px.scatter(
                     df_filtered,
                     x='median_age',
                     y='median_income',
                     size='population',
-                    color='persona_name', # Use the AI name here
+                    color='persona_name', # Use AI Name for Legend
                     hover_name='NAME',
                     title=f"Income vs. Age in {selected_state.name}",
                     labels={'median_age': 'Median Age', 'median_income': 'Median Household Income'},
                     template="plotly_white",
-                    # Force the specific hex colors to match our emojis
+                    # Enforce the specific color sequence
                     color_discrete_sequence=[s['color'] for s in CLUSTER_STYLE] 
                 )
                 st.plotly_chart(fig, use_container_width=True)
@@ -191,10 +194,9 @@ if run_btn and selected_state:
                 for cluster_id, meta in cluster_metadata.items():
                     name = meta['name']
                     desc = meta['desc']
-                    emoji = meta['emoji']
+                    emoji = meta['emoji'] # Use Matching Emoji
                     row = meta['stats']
                     
-                    # Expander with matching Emoji
                     with st.expander(f"{emoji} {name}", expanded=True):
                         st.write(f"_{desc}_")
                         st.markdown(f"""

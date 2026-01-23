@@ -19,7 +19,9 @@ if "CENSUS_API_KEY" not in st.secrets or "GOOGLE_API_KEY" not in st.secrets:
 # Initialize APIs
 c = Census(st.secrets["CENSUS_API_KEY"])
 genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-model = genai.GenerativeModel('gemini-2.5-flash')
+
+# FIX 1: Switch to 1.5-Flash (Higher Rate Limits: ~1,500/day vs 20/day)
+model = genai.GenerativeModel('gemini-1.5-flash')
 
 # ACS 5-Year Variables
 CENSUS_VARS = {
@@ -66,13 +68,13 @@ def get_census_data(state_fips):
         st.error(f"Error fetching census data: {e}")
         return pd.DataFrame()
 
-# --- UPDATED AI FUNCTION: BATCH PROCESSING ---
+# --- UPDATED AI FUNCTION: GRACEFUL FALLBACK ---
 @st.cache_data(show_spinner=False)
 def generate_personas_batch(stats_df_json):
     """
-    Sends ALL cluster statistics to Gemini in one call and expects a JSON response.
+    Sends ALL cluster statistics to Gemini in one call.
+    Includes error handling to prevent crashing if Quota is hit.
     """
-    # Small pause to ensure we don't hit instantaneous rate limits if re-running quickly
     time.sleep(0.5)
     
     prompt = f"""
@@ -85,8 +87,7 @@ def generate_personas_batch(stats_df_json):
     1. A creative, catchy "Persona Name" (3-5 words).
     2. A short "Description" (1 sentence) objectively describing the demographic.
 
-    RETURN ONLY VALID JSON. Do not include markdown formatting (like ```json).
-     The output format must be:
+    RETURN ONLY VALID JSON. The output format must be:
     {{
         "0": {{ "name": "Name Here", "description": "Description Here" }},
         "1": {{ "name": "Name Here", "description": "Description Here" }}
@@ -95,11 +96,17 @@ def generate_personas_batch(stats_df_json):
     
     try:
         response = model.generate_content(prompt)
-        # Clean potential markdown formatting from LLM response
         clean_text = response.text.strip().replace("```json", "").replace("```", "")
         return json.loads(clean_text)
+        
     except Exception as e:
-        st.error(f"AI Error: {e}")
+        # FIX 2: Catch the 429 error and return empty dict instead of crashing
+        if "429" in str(e):
+            st.warning("⚠️ AI Daily Quota Exceeded. Switching to manual mode (charts will still work).")
+        else:
+            st.error(f"AI Error: {e}")
+        
+        # Return empty dict; the main loop will handle the fallback names
         return {}
 
 # --- UI Layout ---
@@ -135,33 +142,29 @@ if run_btn and selected_state:
             df_filtered['cluster'] = kmeans.fit_predict(X)
 
             # 2. Prepare Data for AI
-            # Group by cluster to get averages
             cluster_stats = df_filtered.groupby('cluster')[['median_income', 'median_age', 'population']].mean().reset_index()
-            
-            # Convert to JSON string to pass to the AI function
             stats_json_str = cluster_stats.to_json(orient='records')
 
-            # 3. Single API Call to Generate Personas
+            # 3. Single API Call
             with st.spinner("Asking Gemini to analyze all clusters at once..."):
                 ai_responses = generate_personas_batch(stats_json_str)
 
-            # 4. Process Results
+            # 4. Process Results (With Fallback)
             cluster_metadata = {} 
             
             for index, row in cluster_stats.iterrows():
-                cluster_id = str(row['cluster']) # Ensure key matches JSON string keys
-                
-                # Assign Style based on index
+                cluster_id = str(row['cluster']) 
                 style_idx = index % len(CLUSTER_STYLE)
                 emoji = CLUSTER_STYLE[style_idx]['emoji']
                 
-                # Retrieve AI data or fallback if parsing failed
+                # Check if AI gave us a valid response for this ID
                 if cluster_id in ai_responses:
                     name = ai_responses[cluster_id].get('name', f"Cluster {cluster_id}")
                     desc = ai_responses[cluster_id].get('description', "Description unavailable")
                 else:
+                    # FALLBACK: If API failed or quota hit, use generic names
                     name = f"Cluster {cluster_id}"
-                    desc = "AI generation failed for this cluster."
+                    desc = "Demographic Group (AI unavailable)"
 
                 cluster_metadata[row['cluster']] = {
                     'name': name,
@@ -170,48 +173,37 @@ if run_btn and selected_state:
                     'stats': row
                 }
             
-            # 5. Map AI Names back to DataFrame for Plotting
+            # 5. Map AI Names back to DataFrame
             df_filtered['persona_name'] = df_filtered['cluster'].map(lambda x: cluster_metadata[x]['name'])
-            
-            # Sort to ensure colors align with the legend order
             df_filtered = df_filtered.sort_values(by='cluster')
             
-            # Create columns for layout
             col1, col2 = st.columns([2, 1])
             
             # --- Graph (Plotly) ---
             with col1:
                 st.subheader("Demographic Clusters")
-                
                 fig = px.scatter(
                     df_filtered,
                     x='median_age',
                     y='median_income',
                     size='population',
-                    color='persona_name', # Use AI Name for Legend
+                    color='persona_name',
                     hover_name='NAME',
                     title=f"Income vs. Age in {selected_state.name}",
                     labels={'median_age': 'Median Age', 'median_income': 'Median Household Income'},
                     template="plotly_white",
-                    # Enforce the specific color sequence
                     color_discrete_sequence=[s['color'] for s in CLUSTER_STYLE] 
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
-            # --- AI Personas (Expanders) ---
+            # --- AI Personas ---
             with col2:
                 st.subheader("AI-Generated Personas")
-                
                 for cluster_id, meta in cluster_metadata.items():
-                    name = meta['name']
-                    desc = meta['desc']
-                    emoji = meta['emoji'] # Use Matching Emoji
-                    row = meta['stats']
-                    
-                    with st.expander(f"{emoji} {name}", expanded=True):
-                        st.write(f"_{desc}_")
+                    with st.expander(f"{meta['emoji']} {meta['name']}", expanded=True):
+                        st.write(f"_{meta['desc']}_")
                         st.markdown(f"""
-                        - **Avg Income:** ${row['median_income']:,.0f}
-                        - **Avg Age:** {row['median_age']:.1f}
-                        - **Avg Pop:** {row['population']:,.0f}
+                        - **Avg Income:** ${meta['stats']['median_income']:,.0f}
+                        - **Avg Age:** {meta['stats']['median_age']:.1f}
+                        - **Avg Pop:** {meta['stats']['population']:,.0f}
                         """)

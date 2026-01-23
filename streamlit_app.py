@@ -5,6 +5,7 @@ from us import states
 from sklearn.cluster import KMeans
 import plotly.express as px
 import google.generativeai as genai
+import json
 import time
 
 # --- Configuration & Setup ---
@@ -28,7 +29,6 @@ CENSUS_VARS = {
 }
 
 # --- Style Mapping ---
-# Forces strict color matching between Plotly and the Emojis
 CLUSTER_STYLE = [
     {'color': '#636EFA', 'emoji': '🔵'}, # Blue
     {'color': '#EF553B', 'emoji': '🔴'}, # Red
@@ -37,7 +37,7 @@ CLUSTER_STYLE = [
     {'color': '#FFA15A', 'emoji': '🟠'}, # Orange
     {'color': '#FEFB84', 'emoji': '🟡'}, # Yellow
     {'color': '#A56F4F', 'emoji': '🟤'}, # Brown
-    {'color': '#FF97FF', 'emoji': '🩷'}, # Pink
+    {'color': '#2F2F2F', 'emoji': '⚫'}, # Black/Dark Grey
 ]
 
 # --- Helper Functions ---
@@ -66,30 +66,41 @@ def get_census_data(state_fips):
         st.error(f"Error fetching census data: {e}")
         return pd.DataFrame()
 
-# Added caching to prevent hitting API limits on re-runs
+# --- UPDATED AI FUNCTION: BATCH PROCESSING ---
 @st.cache_data(show_spinner=False)
-def generate_persona(avg_income, avg_age, avg_pop):
-    """Uses Gemini to generate a persona based on cluster statistics."""
+def generate_personas_batch(stats_df_json):
+    """
+    Sends ALL cluster statistics to Gemini in one call and expects a JSON response.
+    """
+    # Small pause to ensure we don't hit instantaneous rate limits if re-running quickly
+    time.sleep(0.5)
     
-    # 1. Rate Limit Protection: Pause to avoid 429 errors
-    time.sleep(1.5) 
-
     prompt = f"""
-    You are a data storyteller. I have identified a demographic cluster of counties with:
-    - Average Median Household Income: ${avg_income:,.0f}
-    - Average Median Age: {avg_age:.1f} years old
-    - Average County Population: {avg_pop:,.0f} people
+    You are a data storyteller. I have performed KMeans clustering on US Counties.
+    Here are the average statistics for each cluster (identified by 'cluster' ID):
+    
+    {stats_df_json}
 
-    Please provide a creative, catchy "Persona Name" (max 3-5 words) and a short "Description" (1 sentence) that objectively describes these counties. 
-    Format the output exactly as: Name: [Name] | Description: [Description]
+    For EACH cluster ID provided in the data, provide:
+    1. A creative, catchy "Persona Name" (3-5 words).
+    2. A short "Description" (1 sentence) objectively describing the demographic.
+
+    RETURN ONLY VALID JSON. Do not include markdown formatting (like ```json).
+     The output format must be:
+    {{
+        "0": {{ "name": "Name Here", "description": "Description Here" }},
+        "1": {{ "name": "Name Here", "description": "Description Here" }}
+    }}
     """
     
     try:
         response = model.generate_content(prompt)
-        return response.text.strip()
+        # Clean potential markdown formatting from LLM response
+        clean_text = response.text.strip().replace("```json", "").replace("```", "")
+        return json.loads(clean_text)
     except Exception as e:
-        # Return a safe error string so the app doesn't crash
-        return f"Name: Cluster Unknown | Description: AI Error: {str(e)}"
+        st.error(f"AI Error: {e}")
+        return {}
 
 # --- UI Layout ---
 st.title("🇺🇸 AI-Powered Census Clustering")
@@ -123,43 +134,43 @@ if run_btn and selected_state:
             kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
             df_filtered['cluster'] = kmeans.fit_predict(X)
 
-            # 2. Generate AI Personas & Prepare Metadata FIRST
+            # 2. Prepare Data for AI
+            # Group by cluster to get averages
             cluster_stats = df_filtered.groupby('cluster')[['median_income', 'median_age', 'population']].mean().reset_index()
+            
+            # Convert to JSON string to pass to the AI function
+            stats_json_str = cluster_stats.to_json(orient='records')
+
+            # 3. Single API Call to Generate Personas
+            with st.spinner("Asking Gemini to analyze all clusters at once..."):
+                ai_responses = generate_personas_batch(stats_json_str)
+
+            # 4. Process Results
             cluster_metadata = {} 
             
-            # Progress bar for AI generation
-            progress_text = "Generating AI personas (with rate limiting)..."
-            my_bar = st.progress(0, text=progress_text)
-
             for index, row in cluster_stats.iterrows():
+                cluster_id = str(row['cluster']) # Ensure key matches JSON string keys
+                
                 # Assign Style based on index
                 style_idx = index % len(CLUSTER_STYLE)
                 emoji = CLUSTER_STYLE[style_idx]['emoji']
                 
-                # Call AI (Cached)
-                raw_text = generate_persona(row['median_income'], row['median_age'], row['population'])
-                
-                # Parse Result
-                try:
-                    name_part, desc_part = raw_text.split('|')
-                    name = name_part.replace("Name:", "").strip()
-                    desc = desc_part.replace("Description:", "").strip()
-                except:
-                    name = f"Cluster {row['cluster']}"
-                    desc = raw_text
-                
+                # Retrieve AI data or fallback if parsing failed
+                if cluster_id in ai_responses:
+                    name = ai_responses[cluster_id].get('name', f"Cluster {cluster_id}")
+                    desc = ai_responses[cluster_id].get('description', "Description unavailable")
+                else:
+                    name = f"Cluster {cluster_id}"
+                    desc = "AI generation failed for this cluster."
+
                 cluster_metadata[row['cluster']] = {
                     'name': name,
                     'desc': desc,
                     'emoji': emoji,
                     'stats': row
                 }
-                
-                my_bar.progress((index + 1) / n_clusters)
             
-            my_bar.empty()
-
-            # 3. Map AI Names back to DataFrame for Plotting
+            # 5. Map AI Names back to DataFrame for Plotting
             df_filtered['persona_name'] = df_filtered['cluster'].map(lambda x: cluster_metadata[x]['name'])
             
             # Sort to ensure colors align with the legend order

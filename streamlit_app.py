@@ -84,7 +84,7 @@ def generate_persona(cluster_stats):
         response = model.generate_content(prompt)
         return response.text.strip()
     except Exception as e:
-        return f"Name: Cluster {cluster_stats['cluster']} | Description: AI generation failed."
+        return f"Name: Cluster {cluster_stats['cluster']} | Description: AI generation failed. {{Exception}}"
 
 # --- UI Layout ---
 st.title("🇺🇸 AI-Powered Census Clustering")

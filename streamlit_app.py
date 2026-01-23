@@ -12,14 +12,15 @@ import seaborn as sns
 st.set_page_config(page_title="AI Census Clusters", layout="wide")
 
 # --- LOAD SECRETS ---
+# Modified to look for top-level CENSUS_API and GOOGLE_API_KEY
 try:
-    CENSUS_API_KEY = st.secrets["api_keys"]["census"]
-    GEMINI_API_KEY = st.secrets["api_keys"]["gemini"]
+    CENSUS_API_KEY = st.secrets["CENSUS_API"]
+    GEMINI_API_KEY = st.secrets["GOOGLE_API_KEY"]
 except FileNotFoundError:
-    st.error("Secrets file not found. Please create .streamlit/secrets.toml")
+    st.error("Secrets file not found. Please check your .streamlit/secrets.toml or Streamlit Cloud settings.")
     st.stop()
-except KeyError:
-    st.error("API keys missing in secrets.toml. Please add 'census' and 'gemini' keys.")
+except KeyError as e:
+    st.error(f"Missing API key in secrets: {e}. Please ensure 'CENSUS_API' and 'GOOGLE_API_KEY' are set.")
     st.stop()
 
 # --- CONFIGURE AI ---
@@ -30,30 +31,20 @@ genai.configure(api_key=GEMINI_API_KEY)
 def get_census_data(state_fips, api_key):
     """
     Fetches ZCTA (Zip Code) data for a specific state.
-    Variables:
-    - B01003_001E: Total Population
-    - B19013_001E: Median Household Income
-    - B01002_001E: Median Age
     """
     c = Census(api_key)
     
-    # Define variables to fetch
-    variables = [
-        'B01003_001E', # Total Pop
-        'B19013_001E', # Median Income
-        'B01002_001E', # Median Age
-        'NAME'
-    ]
+    # Variables: Total Pop, Median Income, Median Age
+    variables = ['B01003_001E', 'B19013_001E', 'B01002_001E', 'NAME']
     
     # Query: Get all Zip Code Tabulation Areas (ZCTA) for the specific state
-    # Note: 'zip code tabulation area:*' fetches all zips inside the state
     geo_filter = {'for': 'zip code tabulation area:*', 'in': f'state:{state_fips}'}
     
     try:
         data = c.acs5.get(variables, geo=geo_filter)
         df = pd.DataFrame(data)
         
-        # Rename columns for clarity
+        # Rename columns
         rename_map = {
             'B01003_001E': 'Population',
             'B19013_001E': 'Median_Income',
@@ -62,7 +53,7 @@ def get_census_data(state_fips, api_key):
         }
         df = df.rename(columns=rename_map)
         
-        # Convert numeric columns (Census returns strings)
+        # Convert numeric columns
         numeric_cols = ['Population', 'Median_Income', 'Median_Age']
         for col in numeric_cols:
             df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -85,8 +76,8 @@ def generate_persona(cluster_stats):
     - Average Population per Zip: {cluster_stats['Population']:,.0f}
     
     Task:
-    1. Create a creative, short "Persona Name" for this demographic group (e.g., "Silver Sophisticates", "Up-and-Coming Urbanites").
-    2. Write a one-sentence description of their lifestyle or needs.
+    1. Create a creative "Persona Name" for this group.
+    2. Write a one-sentence description of their lifestyle.
     
     Format the output exactly like this:
     Name: [Name]
@@ -102,15 +93,15 @@ def generate_persona(cluster_stats):
 # --- SIDEBAR UI ---
 st.sidebar.header("Configuration")
 
-# 1. State Selector
+# State Selector
 state_list = [s.name for s in us.states.STATES]
 selected_state_name = st.sidebar.selectbox("Select State", state_list, index=state_list.index("Illinois"))
 selected_state_obj = us.states.lookup(selected_state_name)
 
-# 2. Cluster Selector
+# Cluster Selector
 n_clusters = st.sidebar.slider("Number of Clusters", min_value=2, max_value=6, value=3)
 
-# 3. Population Filter
+# Population Filter
 min_pop = st.sidebar.number_input("Minimum Population per Zip", min_value=0, value=1000, step=500)
 
 # --- MAIN APP ---
@@ -122,11 +113,10 @@ with st.spinner('Querying US Census Bureau API...'):
     raw_df = get_census_data(selected_state_obj.fips, CENSUS_API_KEY)
 
 if raw_df.empty:
-    st.warning("No data found. Check API key or try another state.")
+    st.warning("No data found or API error. Check your API key.")
     st.stop()
 
 # 2. Preprocessing
-# Filter by population
 filtered_df = raw_df[raw_df['Population'] >= min_pop].dropna()
 st.write(f"Analyzing **{len(filtered_df)}** Zip Codes in {selected_state_name} (after filtering).")
 
@@ -146,18 +136,13 @@ filtered_df['Cluster'] = kmeans.fit_predict(scaled_data)
 st.divider()
 st.subheader("🧩 AI-Generated Cluster Personas")
 
-# Calculate averages per cluster
 cluster_summary = filtered_df.groupby('Cluster')[features].mean().reset_index()
-
 cols = st.columns(n_clusters)
 
 for index, row in cluster_summary.iterrows():
     with cols[index]:
         with st.spinner(f'Generating persona {index+1}...'):
-            # Call Gemini
             ai_response = generate_persona(row)
-            
-            # Parse simple response
             try:
                 name = ai_response.split("Name:")[1].split("Description:")[0].strip()
                 desc = ai_response.split("Description:")[1].strip()
@@ -165,7 +150,6 @@ for index, row in cluster_summary.iterrows():
                 name = f"Cluster {index}"
                 desc = ai_response
 
-            # Display Card
             st.success(f"**{name}**")
             st.caption(desc)
             st.markdown(f"""
@@ -181,7 +165,6 @@ st.subheader("📊 Cluster Visualization")
 col1, col2 = st.columns([2, 1])
 
 with col1:
-    # Scatter Plot: Income vs Age
     fig, ax = plt.subplots(figsize=(10, 6))
     sns.scatterplot(
         data=filtered_df, 
@@ -196,3 +179,13 @@ with col1:
     plt.title("Zip Codes: Income vs. Age")
     plt.grid(True, linestyle='--', alpha=0.3)
     st.pyplot(fig)
+
+with col2:
+    st.markdown("**Top Zips in Cluster 0**")
+    st.dataframe(
+        filtered_df[filtered_df['Cluster'] == 0]
+        .sort_values('Median_Income', ascending=False)
+        .head(10)[['Zip_Code', 'Median_Income', 'Median_Age']]
+        .reset_index(drop=True),
+        use_container_width=True
+    )

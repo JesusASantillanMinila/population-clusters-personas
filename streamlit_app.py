@@ -20,8 +20,8 @@ if "CENSUS_API_KEY" not in st.secrets or "GOOGLE_API_KEY" not in st.secrets:
 c = Census(st.secrets["CENSUS_API_KEY"])
 genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 
-# FIX 1: Switch to 1.5-Flash (Higher Rate Limits: ~1,500/day vs 20/day)
-model = genai.GenerativeModel('gemini-1.5-flash')
+# FIX: Use 'gemini-pro' which is the most stable/compatible model version
+model = genai.GenerativeModel('gemini-pro')
 
 # ACS 5-Year Variables
 CENSUS_VARS = {
@@ -39,7 +39,7 @@ CLUSTER_STYLE = [
     {'color': '#FFA15A', 'emoji': '🟠'}, # Orange
     {'color': '#FEFB84', 'emoji': '🟡'}, # Yellow
     {'color': '#A56F4F', 'emoji': '🟤'}, # Brown
-    {'color': '#2F2F2F', 'emoji': '⚫'}, # Black/Dark Grey
+    {'color': '#2F2F2F', 'emoji': '⚫'}, # Black (Fixed)
 ]
 
 # --- Helper Functions ---
@@ -68,12 +68,11 @@ def get_census_data(state_fips):
         st.error(f"Error fetching census data: {e}")
         return pd.DataFrame()
 
-# --- UPDATED AI FUNCTION: GRACEFUL FALLBACK ---
+# --- UPDATED AI FUNCTION: BATCH PROCESSING ---
 @st.cache_data(show_spinner=False)
 def generate_personas_batch(stats_df_json):
     """
     Sends ALL cluster statistics to Gemini in one call.
-    Includes error handling to prevent crashing if Quota is hit.
     """
     time.sleep(0.5)
     
@@ -95,18 +94,21 @@ def generate_personas_batch(stats_df_json):
     """
     
     try:
+        # Note: gemini-pro works best when you explicitly ask for text and clean it
         response = model.generate_content(prompt)
-        clean_text = response.text.strip().replace("```json", "").replace("```", "")
+        clean_text = response.text.strip()
+        
+        # Handle cases where the model wraps code in markdown blocks
+        if "```" in clean_text:
+            clean_text = clean_text.replace("```json", "").replace("```", "")
+            
         return json.loads(clean_text)
         
     except Exception as e:
-        # FIX 2: Catch the 429 error and return empty dict instead of crashing
         if "429" in str(e):
-            st.warning("⚠️ AI Daily Quota Exceeded. Switching to manual mode (charts will still work).")
+            st.warning("⚠️ AI Daily Quota Exceeded. Switching to manual mode.")
         else:
-            st.error(f"AI Error: {e}")
-        
-        # Return empty dict; the main loop will handle the fallback names
+            st.warning(f"AI Error ({str(e)}). Using placeholder names.")
         return {}
 
 # --- UI Layout ---
@@ -149,7 +151,7 @@ if run_btn and selected_state:
             with st.spinner("Asking Gemini to analyze all clusters at once..."):
                 ai_responses = generate_personas_batch(stats_json_str)
 
-            # 4. Process Results (With Fallback)
+            # 4. Process Results
             cluster_metadata = {} 
             
             for index, row in cluster_stats.iterrows():
@@ -157,12 +159,11 @@ if run_btn and selected_state:
                 style_idx = index % len(CLUSTER_STYLE)
                 emoji = CLUSTER_STYLE[style_idx]['emoji']
                 
-                # Check if AI gave us a valid response for this ID
+                # Check AI response
                 if cluster_id in ai_responses:
                     name = ai_responses[cluster_id].get('name', f"Cluster {cluster_id}")
                     desc = ai_responses[cluster_id].get('description', "Description unavailable")
                 else:
-                    # FALLBACK: If API failed or quota hit, use generic names
                     name = f"Cluster {cluster_id}"
                     desc = "Demographic Group (AI unavailable)"
 

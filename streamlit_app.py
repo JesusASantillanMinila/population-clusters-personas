@@ -61,10 +61,9 @@ def get_census_data(state_fips):
 
 def generate_personas(cluster_summary):
     """
-    Sends cluster centers to Gemini to generate names and descriptions.
-    Uses 'gemini-1.5-flash' for speed and efficiency.
+
     """
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel('gemini-2.5-flash')
     
     # Create a string representation of the clusters for the prompt
     cluster_text = ""

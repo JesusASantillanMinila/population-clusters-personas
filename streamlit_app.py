@@ -78,7 +78,7 @@ def generate_personas(cluster_summary):
     
     For EACH cluster, provide:
     1. A creative, short "Persona Name" (e.g., "Wealthy Retirees", "Young Professionals").
-    2. A short objective description (max 15 words).
+    2. A short objective description (max 3 sentences).
     
     Return the response strictly as a JSON list of objects with keys: "cluster_id", "persona_name", "description". 
     Do not include markdown formatting like ```json. Just the raw JSON string.

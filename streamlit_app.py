@@ -20,8 +20,8 @@ if "CENSUS_API_KEY" not in st.secrets or "GOOGLE_API_KEY" not in st.secrets:
 c = Census(st.secrets["CENSUS_API_KEY"])
 genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 
-# FIX: Use 'gemini-pro' which is the most stable/compatible model version
-model = genai.GenerativeModel('gemini-2.5-flash')
+# Use a standard model name (Ensure this matches available models in your region)
+model = genai.GenerativeModel('gemini-1.5-flash') 
 
 # ACS 5-Year Variables
 CENSUS_VARS = {
@@ -39,7 +39,7 @@ CLUSTER_STYLE = [
     {'color': '#FFA15A', 'emoji': '🟠'}, # Orange
     {'color': '#FEFB84', 'emoji': '🟡'}, # Yellow
     {'color': '#A56F4F', 'emoji': '🟤'}, # Brown
-    {'color': '#2F2F2F', 'emoji': '⚫'}, # Black (Fixed)
+    {'color': '#2F2F2F', 'emoji': '⚫'}, # Black
 ]
 
 # --- Helper Functions ---
@@ -68,11 +68,12 @@ def get_census_data(state_fips):
         st.error(f"Error fetching census data: {e}")
         return pd.DataFrame()
 
-# --- UPDATED AI FUNCTION: BATCH PROCESSING ---
+# --- UPDATED AI FUNCTION: RETURNS ERROR STRING ---
 @st.cache_data(show_spinner=False)
 def generate_personas_batch(stats_df_json):
     """
     Sends ALL cluster statistics to Gemini in one call.
+    Returns: Tuple (json_data, error_message)
     """
     time.sleep(0.5)
     
@@ -94,7 +95,6 @@ def generate_personas_batch(stats_df_json):
     """
     
     try:
-        # Note: gemini-pro works best when you explicitly ask for text and clean it
         response = model.generate_content(prompt)
         clean_text = response.text.strip()
         
@@ -102,14 +102,12 @@ def generate_personas_batch(stats_df_json):
         if "```" in clean_text:
             clean_text = clean_text.replace("```json", "").replace("```", "")
             
-        return json.loads(clean_text)
+        # Return Data and None for error
+        return json.loads(clean_text), None
         
     except Exception as e:
-        if "429" in str(e):
-            st.warning("⚠️ AI Daily Quota Exceeded. Switching to manual mode.")
-        else:
-            st.warning(f"AI Error ({str(e)}). Using placeholder names.")
-        return {}
+        # Return empty dict and the ACTUAL error string
+        return {}, str(e)
 
 # --- UI Layout ---
 st.title("🇺🇸 AI-Powered Census Clustering")
@@ -147,9 +145,9 @@ if run_btn and selected_state:
             cluster_stats = df_filtered.groupby('cluster')[['median_income', 'median_age', 'population']].mean().reset_index()
             stats_json_str = cluster_stats.to_json(orient='records')
 
-            # 3. Single API Call
+            # 3. Single API Call (Unpack Tuple)
             with st.spinner("Asking Gemini to analyze all clusters at once..."):
-                ai_responses = generate_personas_batch(stats_json_str)
+                ai_responses, error_log = generate_personas_batch(stats_json_str)
 
             # 4. Process Results
             cluster_metadata = {} 
@@ -165,7 +163,11 @@ if run_btn and selected_state:
                     desc = ai_responses[cluster_id].get('description', "Description unavailable")
                 else:
                     name = f"Cluster {cluster_id}"
-                    desc = "Demographic Group (AI unavailable)"
+                    # --- FIX: Display the actual error message here ---
+                    if error_log:
+                        desc = f"⚠️ Error: {error_log}"
+                    else:
+                        desc = "Demographic Group (AI unavailable)"
 
                 cluster_metadata[row['cluster']] = {
                     'name': name,

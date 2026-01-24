@@ -2,45 +2,33 @@ import streamlit as st
 import pandas as pd
 from census import Census
 from us import states
-from sklearn.cluster import KMeans
 import plotly.express as px
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
 import google.generativeai as genai
 import json
-import time
 
 # --- Configuration & Setup ---
-st.set_page_config(page_title="Census Demographic Clusters", layout="wide")
+st.set_page_config(page_title="Demographic Persona Generator", layout="wide")
 
-# Check for secrets
+# check secrets
 if "CENSUS_API_KEY" not in st.secrets or "GOOGLE_API_KEY" not in st.secrets:
-    st.error("Missing API Keys. Please configure .streamlit/secrets.toml with CENSUS_API_KEY and GOOGLE_API_KEY.")
+    st.error("Please add CENSUS_API_KEY and GOOGLE_API_KEY to your .streamlit/secrets.toml file.")
     st.stop()
 
 # Initialize APIs
 c = Census(st.secrets["CENSUS_API_KEY"])
 genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 
-# Use a standard model name (Ensure this matches available models in your region)
-model = genai.GenerativeModel('gemini-2.5-flash') 
-
-# ACS 5-Year Variables
+# Mapping of Census Variables
+# B01002_001E: Median Age
+# B19013_001E: Median Household Income
+# B01003_001E: Total Population
 CENSUS_VARS = {
-    'B01003_001E': 'population',
-    'B19013_001E': 'median_income',
-    'B01002_001E': 'median_age'
+    'B01002_001E': 'Median Age',
+    'B19013_001E': 'Median Income',
+    'B01003_001E': 'Population'
 }
-
-# --- Style Mapping ---
-CLUSTER_STYLE = [
-    {'color': '#636EFA', 'emoji': '🔵'}, # Blue
-    {'color': '#EF553B', 'emoji': '🔴'}, # Red
-    {'color': '#00CC96', 'emoji': '🟢'}, # Green
-    {'color': '#AB63FA', 'emoji': '🟣'}, # Purple
-    {'color': '#FFA15A', 'emoji': '🟠'}, # Orange
-    {'color': '#FEFB84', 'emoji': '🟡'}, # Yellow
-    {'color': '#A56F4F', 'emoji': '🟤'}, # Brown
-    {'color': '#2F2F2F', 'emoji': '⚫'}, # Black
-]
 
 # --- Helper Functions ---
 
@@ -51,162 +39,163 @@ def get_census_data(state_fips):
         data = c.acs5.state_county(
             fields=list(CENSUS_VARS.keys()) + ['NAME'],
             state_fips=state_fips,
-            county_fips="*",
-            year=2021
+            county_fips="*"
         )
         df = pd.DataFrame(data)
-        df.rename(columns=CENSUS_VARS, inplace=True)
         
-        cols_to_numeric = ['population', 'median_income', 'median_age']
-        for col in cols_to_numeric:
+        # Rename columns
+        df = df.rename(columns=CENSUS_VARS)
+        
+        # Convert numeric columns to float/int
+        numeric_cols = ['Median Age', 'Median Income', 'Population']
+        for col in numeric_cols:
             df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+        # Drop rows with missing data (often occurs in very small counties)
+        df = df.dropna(subset=numeric_cols)
         
-        # Filter invalid data
-        df = df[(df['median_income'] > 0) & (df['median_age'] > 0) & (df['population'] > 0)]
         return df
     except Exception as e:
-        st.error(f"Error fetching census data: {e}")
+        st.error(f"Error fetching Census data: {e}")
         return pd.DataFrame()
 
-# --- UPDATED AI FUNCTION: RETURNS ERROR STRING ---
-@st.cache_data(show_spinner=False)
-def generate_personas_batch(stats_df_json):
+def generate_personas(cluster_summary):
     """
-    Sends ALL cluster statistics to Gemini in one call.
-    Returns: Tuple (json_data, error_message)
+    Sends cluster centers to Gemini to generate names and descriptions.
+    Uses 'gemini-1.5-flash' for speed and efficiency.
     """
-    time.sleep(0.5)
+    model = genai.GenerativeModel('gemini-1.5-flash')
     
+    # Create a string representation of the clusters for the prompt
+    cluster_text = ""
+    for index, row in cluster_summary.iterrows():
+        cluster_text += f"Cluster {index}: Median Age {row['Median Age']:.1f}, Median Income ${row['Median Income']:,.0f}\n"
+
     prompt = f"""
-    You are a data storyteller. I have performed KMeans clustering on US Counties.
-    Here are the average statistics for each cluster (identified by 'cluster' ID):
+    You are a demographic analyst. I have clustered US counties based on age and income. 
+    Here are the statistics for each cluster:
     
-    {stats_df_json}
-
-    For EACH cluster ID provided in the data, provide:
-    1. A creative, catchy "Persona Name" (3-5 words).
-    2. A short "Description" (1 sentence) objectively describing the demographic.
-
-    RETURN ONLY VALID JSON. The output format must be:
-    {{
-        "0": {{ "name": "Name Here", "description": "Description Here" }},
-        "1": {{ "name": "Name Here", "description": "Description Here" }}
-    }}
+    {cluster_text}
+    
+    For EACH cluster, provide:
+    1. A creative, short "Persona Name" (e.g., "Wealthy Retirees", "Young Professionals").
+    2. A short objective description (max 15 words).
+    
+    Return the response strictly as a JSON list of objects with keys: "cluster_id", "persona_name", "description". 
+    Do not include markdown formatting like ```json. Just the raw JSON string.
     """
     
     try:
         response = model.generate_content(prompt)
-        clean_text = response.text.strip()
-        
-        # Handle cases where the model wraps code in markdown blocks
-        if "```" in clean_text:
-            clean_text = clean_text.replace("```json", "").replace("```", "")
-            
-        # Return Data and None for error
-        return json.loads(clean_text), None
-        
+        # Clean response just in case markdown was included
+        text_response = response.text.replace("```json", "").replace("```", "").strip()
+        return json.loads(text_response)
     except Exception as e:
-        # Return empty dict and the ACTUAL error string
-        return {}, str(e)
+        st.error(f"Error generating personas with Gemini: {e}")
+        return []
 
-# --- UI Layout ---
-st.title("🇺🇸 AI-Powered Census Clustering")
-st.markdown("Cluster US counties based on income, age, and population, then use **Gemini AI** to name the resulting demographic groups.")
+# --- Main App Interface ---
+
+st.title("🇺🇸 AI-Powered Demographic Clustering")
+st.markdown("Analyze US counties by Age and Income, clustered by ML and named by GenAI.")
 
 # Sidebar Controls
 with st.sidebar:
-    st.header("Configuration")
-    state_names = [s.name for s in states.STATES]
-    selected_state_name = st.selectbox("Select State", state_names, index=state_names.index("California"))
-    selected_state = states.lookup(selected_state_name)
-    n_clusters = st.slider("Number of Clusters", min_value=2, max_value=8, value=3)
-    min_pop = st.number_input("Minimum County Population", value=10000, step=1000)
+    st.header("Settings")
+    
+    # State Selection
+    state_list = [s.name for s in states.STATES]
+    selected_state_name = st.selectbox("Select State", state_list, index=state_list.index("California"))
+    selected_state = getattr(states, selected_state_name)
+    
+    # Filter Controls
+    min_pop = st.number_input("Minimum County Population", min_value=0, value=10000, step=1000)
+    
+    # Clustering Controls
+    num_clusters = st.slider("Number of Clusters", min_value=2, max_value=8, value=4)
+    
     run_btn = st.button("Run Analysis", type="primary")
 
-# --- Main Analysis Flow ---
-if run_btn and selected_state:
-    with st.spinner(f"Fetching Census data for {selected_state.name}..."):
+if run_btn:
+    with st.spinner(f"Fetching Census data for {selected_state_name}..."):
         df = get_census_data(selected_state.fips)
-    
-    if df.empty:
-        st.warning("No data found.")
-    else:
-        df_filtered = df[df['population'] >= min_pop].copy()
+
+    if not df.empty:
+        # Filter by Population
+        df_filtered = df[df['Population'] >= min_pop].copy()
         
-        if len(df_filtered) < n_clusters:
-            st.error(f"Not enough counties ({len(df_filtered)}) remaining to form {n_clusters} clusters.")
+        if len(df_filtered) < num_clusters:
+            st.error(f"Not enough counties remain after filtering (Count: {len(df_filtered)}). Decrease the population threshold.")
         else:
-            # 1. Run KMeans
-            X = df_filtered[['median_income', 'median_age']]
-            kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-            df_filtered['cluster'] = kmeans.fit_predict(X)
-
-            # 2. Prepare Data for AI
-            cluster_stats = df_filtered.groupby('cluster')[['median_income', 'median_age', 'population']].mean().reset_index()
-            stats_json_str = cluster_stats.to_json(orient='records')
-
-            # 3. Single API Call (Unpack Tuple)
-            with st.spinner("Asking Gemini to analyze all clusters at once..."):
-                ai_responses, error_log = generate_personas_batch(stats_json_str)
-
-            # 4. Process Results
-            cluster_metadata = {} 
+            # --- Machine Learning Step ---
+            features = ['Median Age', 'Median Income']
+            X = df_filtered[features]
             
-            for index, row in cluster_stats.iterrows():
-                cluster_id = str(row['cluster']) 
-                style_idx = index % len(CLUSTER_STYLE)
-                emoji = CLUSTER_STYLE[style_idx]['emoji']
+            # Standardize Data (Important for K-Means)
+            scaler = StandardScaler()
+            X_scaled = scaler.fit_transform(X)
+            
+            # KMeans Clustering
+            kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init=10)
+            df_filtered['Cluster'] = kmeans.fit_predict(X_scaled)
+            
+            # Calculate Cluster Centers (inverse transform to get real values)
+            centers_scaled = kmeans.cluster_centers_
+            centers = scaler.inverse_transform(centers_scaled)
+            
+            # Create Summary DataFrame
+            summary_df = pd.DataFrame(centers, columns=features)
+            summary_df['Counties in Cluster'] = df_filtered['Cluster'].value_counts().sort_index()
+            
+            # --- GenAI Step ---
+            with st.spinner("Generating personas with Gemini 1.5 Flash..."):
+                personas = generate_personas(summary_df)
+            
+            # Process GenAI Results
+            if personas:
+                # Create a map from cluster_id to persona data
+                persona_map = {p['cluster_id']: p for p in personas}
                 
-                # Check AI response
-                if cluster_id in ai_responses:
-                    name = ai_responses[cluster_id].get('name', f"Cluster {cluster_id}")
-                    desc = ai_responses[cluster_id].get('description', "Description unavailable")
-                else:
-                    name = f"Cluster {cluster_id}"
-                    # --- FIX: Display the actual error message here ---
-                    if error_log:
-                        desc = f"⚠️ Error: {error_log}"
-                    else:
-                        desc = error_log
+                # Add GenAI data to summary df
+                summary_df['Persona Name'] = summary_df.index.map(lambda x: persona_map.get(x, {}).get('persona_name', 'Unknown'))
+                summary_df['Description'] = summary_df.index.map(lambda x: persona_map.get(x, {}).get('description', 'No description'))
+                
+                # Add Persona Name to main dataframe for plotting
+                df_filtered['Persona Name'] = df_filtered['Cluster'].map(lambda x: persona_map.get(x, {}).get('persona_name', f'Cluster {x}'))
+            
+            # --- Visualizations ---
+            
+            # 1. Plotly Graph
+            st.subheader(f"Demographic Clusters in {selected_state_name}")
+            fig = px.scatter(
+                df_filtered,
+                x='Median Age',
+                y='Median Income',
+                color='Persona Name',
+                hover_data=['NAME', 'Population'],
+                size='Population',
+                title=f"Income vs Age by County (Colored by AI Persona)",
+                template="plotly_white"
+            )
+            fig.update_layout(legend_title_text='AI Persona')
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # 2. Summary Table
+            st.subheader("Cluster Personas & Statistics")
+            
+            # Reorder columns for display
+            display_cols = ['Persona Name', 'Median Age', 'Median Income', 'Counties in Cluster', 'Description']
+            
+            # Format numbers for cleaner display
+            summary_display = summary_df.copy()
+            summary_display['Median Income'] = summary_display['Median Income'].apply(lambda x: f"${x:,.0f}")
+            summary_display['Median Age'] = summary_display['Median Age'].apply(lambda x: f"{x:.1f}")
+            
+            st.dataframe(
+                summary_display[display_cols], 
+                hide_index=True, 
+                use_container_width=True
+            )
 
-                cluster_metadata[row['cluster']] = {
-                    'name': name,
-                    'desc': desc,
-                    'emoji': emoji,
-                    'stats': row
-                }
-            
-            # 5. Map AI Names back to DataFrame
-            df_filtered['persona_name'] = df_filtered['cluster'].map(lambda x: cluster_metadata[x]['name'])
-            df_filtered = df_filtered.sort_values(by='cluster')
-            
-            col1, col2 = st.columns([2, 1])
-            
-            # --- Graph (Plotly) ---
-            with col1:
-                st.subheader("Demographic Clusters")
-                fig = px.scatter(
-                    df_filtered,
-                    x='median_age',
-                    y='median_income',
-                    size='population',
-                    color='persona_name',
-                    hover_name='NAME',
-                    title=f"Income vs. Age in {selected_state.name}",
-                    labels={'median_age': 'Median Age', 'median_income': 'Median Household Income'},
-                    template="plotly_white",
-                    color_discrete_sequence=[s['color'] for s in CLUSTER_STYLE] 
-                )
-                st.plotly_chart(fig, use_container_width=True)
-
-            # --- AI Personas ---
-            with col2:
-                st.subheader("AI-Generated Personas")
-                for cluster_id, meta in cluster_metadata.items():
-                    with st.expander(f"{meta['emoji']} {meta['name']}", expanded=True):
-                        st.write(f"_{meta['desc']}_")
-                        st.markdown(f"""
-                        - **Avg Income:** ${meta['stats']['median_income']:,.0f}
-                        - **Avg Age:** {meta['stats']['median_age']:.1f}
-                        - **Avg Pop:** {meta['stats']['population']:,.0f}
-                        """)
+    else:
+        st.warning("No data found. Please check your API key or try a different state.")

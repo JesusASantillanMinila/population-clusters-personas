@@ -21,7 +21,7 @@ c = Census(st.secrets["CENSUS_API_KEY"])
 genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 
 # Use a standard model name (Ensure this matches available models in your region)
-model = genai.GenerativeModel('gemini-1.5-flash') 
+model = genai.GenerativeModel('gemini-2.5-flash') 
 
 # ACS 5-Year Variables
 CENSUS_VARS = {

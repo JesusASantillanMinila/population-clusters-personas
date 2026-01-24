@@ -167,7 +167,7 @@ if run_btn and selected_state:
                     if error_log:
                         desc = f"⚠️ Error: {error_log}"
                     else:
-                        desc = "Demographic Group (AI unavailable)"
+                        desc = error_log
 
                 cluster_metadata[row['cluster']] = {
                     'name': name,

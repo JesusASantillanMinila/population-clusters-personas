@@ -105,8 +105,9 @@ with st.sidebar:
     # State Selection
     state_list = [s.name for s in states.STATES]
     selected_state_name = st.selectbox("Select State", state_list, index=state_list.index("California"))
-    selected_state = getattr(states, selected_state_name)
     
+    # Use the .lookup() method instead of getattr
+    selected_state = states.lookup(selected_state_name)    
     # Filter Controls
     min_pop = st.number_input("Minimum County Population", min_value=0, value=10000, step=1000)
     

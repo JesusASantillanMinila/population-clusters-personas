@@ -7,11 +7,12 @@ from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 import google.generativeai as genai
 import json
+import itertools
 
 # --- Configuration & Setup ---
 st.set_page_config(page_title="Demographic Persona Generator", layout="wide")
 
-# check secrets
+# Check secrets
 if "CENSUS_API_KEY" not in st.secrets or "GOOGLE_API_KEY" not in st.secrets:
     st.error("Please add CENSUS_API_KEY and GOOGLE_API_KEY to your .streamlit/secrets.toml file.")
     st.stop()
@@ -20,21 +21,31 @@ if "CENSUS_API_KEY" not in st.secrets or "GOOGLE_API_KEY" not in st.secrets:
 c = Census(st.secrets["CENSUS_API_KEY"])
 genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 
-# Mapping of Census Variables
-# B01002_001E: Median Age
-# B19013_001E: Median Household Income
-# B01003_001E: Total Population
+# --- Census Variables Mapping ---
+# We fetch raw counts to calculate percentages later
 CENSUS_VARS = {
     'B01002_001E': 'Median Age',
     'B19013_001E': 'Median Income',
-    'B01003_001E': 'Population'
+    'B01003_001E': 'Population',
+    # Education (Total > 25yo, Bach, Master, Prof, Doc)
+    'B15003_001E': 'Edu_Total',
+    'B15003_022E': 'Edu_Bach',
+    'B15003_023E': 'Edu_Mast',
+    'B15003_024E': 'Edu_Prof',
+    'B15003_025E': 'Edu_Doc',
+    # Housing Tenure (Total, Owner Occupied)
+    'B25003_001E': 'Housing_Total',
+    'B25003_002E': 'Housing_Owner',
+    # Household Structure (Total, Family Households)
+    'B11001_001E': 'HH_Total',
+    'B11001_002E': 'HH_Family'
 }
 
 # --- Helper Functions ---
 
 @st.cache_data
 def get_census_data(state_fips):
-    """Fetches county-level data for a specific state."""
+    """Fetches county-level data and calculates derived demographic percentages."""
     try:
         data = c.acs5.state_county(
             fields=list(CENSUS_VARS.keys()) + ['NAME'],
@@ -43,16 +54,31 @@ def get_census_data(state_fips):
         )
         df = pd.DataFrame(data)
         
-        # Rename columns
+        # Rename columns based on mapping
         df = df.rename(columns=CENSUS_VARS)
         
-        # Convert numeric columns to float/int
-        numeric_cols = ['Median Age', 'Median Income', 'Population']
+        # Convert to numeric
+        numeric_cols = list(CENSUS_VARS.values())
         for col in numeric_cols:
             df[col] = pd.to_numeric(df[col], errors='coerce')
             
-        # Drop rows with missing data (often occurs in very small counties)
-        df = df.dropna(subset=numeric_cols)
+        # --- Feature Engineering ---
+        
+        # 1. Education: % Bachelor's Degree or Higher
+        df['Edu_Sum_Higher'] = df['Edu_Bach'] + df['Edu_Mast'] + df['Edu_Prof'] + df['Edu_Doc']
+        df['Pct Bachelor+'] = (df['Edu_Sum_Higher'] / df['Edu_Total']) * 100
+        
+        # 2. Housing: % Owner Occupied
+        df['Pct Owner Occupied'] = (df['Housing_Owner'] / df['Housing_Total']) * 100
+        
+        # 3. Structure: % Family Households
+        df['Pct Family Households'] = (df['HH_Family'] / df['HH_Total']) * 100
+        
+        # Clean up infinite values or NaNs from division by zero
+        final_cols = ['NAME', 'Population', 'Median Age', 'Median Income', 
+                      'Pct Bachelor+', 'Pct Owner Occupied', 'Pct Family Households']
+        
+        df = df[final_cols].dropna()
         
         return df
     except Exception as e:
@@ -61,24 +87,31 @@ def get_census_data(state_fips):
 
 def generate_personas(cluster_summary):
     """
-
+    Generates persona names using Gemini based on 5 demographic variables.
     """
     model = genai.GenerativeModel('gemini-2.5-flash')
     
-    # Create a string representation of the clusters for the prompt
+    # Create a string representation of the clusters
     cluster_text = ""
     for index, row in cluster_summary.iterrows():
-        cluster_text += f"Cluster {index}: Median Age {row['Median Age']:.1f}, Median Income ${row['Median Income']:,.0f}\n"
+        cluster_text += (
+            f"Cluster {index}: "
+            f"Age {row['Median Age']:.1f}, "
+            f"Income ${row['Median Income']:,.0f}, "
+            f"Education (Bach+) {row['Pct Bachelor+']:.1f}%, "
+            f"Home Ownership {row['Pct Owner Occupied']:.1f}%, "
+            f"Family Households {row['Pct Family Households']:.1f}%\n"
+        )
 
     prompt = f"""
-    You are a demographic analyst. I have clustered US counties based on age and income. 
+    You are a demographic analyst. I have clustered US counties based on Age, Income, Education, Housing Tenure, and Household Structure.
     Here are the statistics for each cluster:
     
     {cluster_text}
     
     For EACH cluster, provide:
-    1. A creative, short "Persona Name" (e.g., "Wealthy Retirees", "Young Professionals").
-    2. A short objective description (max 3 sentences).
+    1. A creative, short "Persona Name" (e.g., "Educated Suburban Families", "Retiring Rural Owners").
+    2. A short objective description (max 2 sentences) explaining *why* they fit this name based on the specific variables provided.
     
     Return the response strictly as a JSON list of objects with keys: "cluster_id", "persona_name", "description". 
     Do not include markdown formatting like ```json. Just the raw JSON string.
@@ -86,7 +119,6 @@ def generate_personas(cluster_summary):
     
     try:
         response = model.generate_content(prompt)
-        # Clean response just in case markdown was included
         text_response = response.text.replace("```json", "").replace("```", "").strip()
         return json.loads(text_response)
     except Exception as e:
@@ -95,23 +127,18 @@ def generate_personas(cluster_summary):
 
 # --- Main App Interface ---
 
-st.title("🇺🇸 AI-Powered Demographic Clustering")
-st.markdown("Analyze US counties by Age and Income, clustered by ML and named by GenAI.")
+st.title("🇺🇸 Deep Demographic Clustering")
+st.markdown("Analyze US counties by Age, Income, Education, Housing & Family Structure.")
 
 # Sidebar Controls
 with st.sidebar:
     st.header("Settings")
     
-    # State Selection
     state_list = [s.name for s in states.STATES]
     selected_state_name = st.selectbox("Select State", state_list, index=state_list.index("California"))
+    selected_state = states.lookup(selected_state_name)     
     
-    # Use the .lookup() method instead of getattr
-    selected_state = states.lookup(selected_state_name)    
-    # Filter Controls
     min_pop = st.number_input("Minimum County Population", min_value=0, value=10000, step=1000)
-    
-    # Clustering Controls
     num_clusters = st.slider("Number of Clusters", min_value=2, max_value=8, value=4)
     
     run_btn = st.button("Run Analysis", type="primary")
@@ -121,78 +148,98 @@ if run_btn:
         df = get_census_data(selected_state.fips)
 
     if not df.empty:
-        # Filter by Population
         df_filtered = df[df['Population'] >= min_pop].copy()
         
         if len(df_filtered) < num_clusters:
             st.error(f"Not enough counties remain after filtering (Count: {len(df_filtered)}). Decrease the population threshold.")
         else:
             # --- Machine Learning Step ---
-            features = ['Median Age', 'Median Income']
+            features = ['Median Age', 'Median Income', 'Pct Bachelor+', 'Pct Owner Occupied', 'Pct Family Households']
             X = df_filtered[features]
             
-            # Standardize Data (Important for K-Means)
             scaler = StandardScaler()
             X_scaled = scaler.fit_transform(X)
             
-            # KMeans Clustering
             kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init=10)
             df_filtered['Cluster'] = kmeans.fit_predict(X_scaled)
             
-            # Calculate Cluster Centers (inverse transform to get real values)
+            # Calculate Cluster Centers
             centers_scaled = kmeans.cluster_centers_
             centers = scaler.inverse_transform(centers_scaled)
             
-            # Create Summary DataFrame
             summary_df = pd.DataFrame(centers, columns=features)
             summary_df['Counties in Cluster'] = df_filtered['Cluster'].value_counts().sort_index()
             
             # --- GenAI Step ---
-            with st.spinner("Generating personas with Gemini 2.5 Flash..."):
+            with st.spinner("Generating detailed personas with Gemini..."):
                 personas = generate_personas(summary_df)
             
             # Process GenAI Results
             if personas:
-                # Create a map from cluster_id to persona data
                 persona_map = {p['cluster_id']: p for p in personas}
                 
-                # Add GenAI data to summary df
                 summary_df['Persona Name'] = summary_df.index.map(lambda x: persona_map.get(x, {}).get('persona_name', 'Unknown'))
                 summary_df['Description'] = summary_df.index.map(lambda x: persona_map.get(x, {}).get('description', 'No description'))
                 
-                # Add Persona Name to main dataframe for plotting
                 df_filtered['Persona Name'] = df_filtered['Cluster'].map(lambda x: persona_map.get(x, {}).get('persona_name', f'Cluster {x}'))
             
             # --- Visualizations ---
             
-            # 1. Plotly Graph
-            st.subheader(f"Demographic Clusters in {selected_state_name}")
-            fig = px.scatter(
-                df_filtered,
-                x='Median Age',
-                y='Median Income',
-                color='Persona Name',
-                hover_data=['NAME', 'Population'],
-                size='Population',
-                title=f"Income vs Age by County (Colored by AI Persona)",
-                template="plotly_white"
-            )
-            fig.update_layout(legend_title_text='AI Persona')
-            st.plotly_chart(fig, use_container_width=True)
+            st.success("Analysis Complete!")
             
-            # 2. Summary Table
+            # 1. Visualization Controls (Cycle through combinations)
+            st.subheader("Visual Analysis")
+            
+            # Generate all unique pairs of features for the graph options
+            # Combinations(5, 2) = 10 possible graphs
+            feature_pairs = list(itertools.combinations(features, 2))
+            
+            # Create readable labels for the selectbox
+            graph_options = {f"{x} vs {y}": (x, y) for x, y in feature_pairs}
+            
+            # User Selector
+            col1, col2 = st.columns([1, 3])
+            with col1:
+                st.markdown("**Graph Filter**")
+                selected_graph_label = st.radio(
+                    "Choose Graph Combination:", 
+                    list(graph_options.keys()),
+                    index=0 # Default to first option (usually Age vs Income)
+                )
+                x_axis, y_axis = graph_options[selected_graph_label]
+            
+            with col2:
+                fig = px.scatter(
+                    df_filtered,
+                    x=x_axis,
+                    y=y_axis,
+                    color='Persona Name',
+                    hover_data=['NAME', 'Population'] + features,
+                    size='Population',
+                    title=f"{selected_graph_label} (Colored by Persona)",
+                    template="plotly_white",
+                    height=500
+                )
+                fig.update_layout(legend_title_text='AI Persona')
+                st.plotly_chart(fig, use_container_width=True)
+            
+            # 2. Detailed Summary Table
+            st.divider()
             st.subheader("Cluster Personas & Statistics")
             
-            # Reorder columns for display
-            display_cols = ['Persona Name', 'Median Age', 'Median Income', 'Counties in Cluster', 'Description']
-            
-            # Format numbers for cleaner display
+            # Formatting for display
             summary_display = summary_df.copy()
             summary_display['Median Income'] = summary_display['Median Income'].apply(lambda x: f"${x:,.0f}")
             summary_display['Median Age'] = summary_display['Median Age'].apply(lambda x: f"{x:.1f}")
+            summary_display['Pct Bachelor+'] = summary_display['Pct Bachelor+'].apply(lambda x: f"{x:.1f}%")
+            summary_display['Pct Owner Occupied'] = summary_display['Pct Owner Occupied'].apply(lambda x: f"{x:.1f}%")
+            summary_display['Pct Family Households'] = summary_display['Pct Family Households'].apply(lambda x: f"{x:.1f}%")
+            
+            # Reorder columns
+            cols = ['Persona Name', 'Median Age', 'Median Income', 'Pct Bachelor+', 'Pct Owner Occupied', 'Pct Family Households', 'Counties in Cluster', 'Description']
             
             st.dataframe(
-                summary_display[display_cols], 
+                summary_display[cols], 
                 hide_index=True, 
                 use_container_width=True
             )

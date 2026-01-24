@@ -148,7 +148,7 @@ if run_btn:
             summary_df['Counties in Cluster'] = df_filtered['Cluster'].value_counts().sort_index()
             
             # --- GenAI Step ---
-            with st.spinner("Generating personas with Gemini 1.5 Flash..."):
+            with st.spinner("Generating personas with Gemini 2.5 Flash..."):
                 personas = generate_personas(summary_df)
             
             # Process GenAI Results

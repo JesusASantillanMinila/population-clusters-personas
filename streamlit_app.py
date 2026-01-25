@@ -4,7 +4,7 @@ import requests
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 import plotly.express as px
-import itertools
+import itertools 
 
 # --- 1. Configuration & Dictionaries ---
 st.set_page_config(page_title="Census PUMS Clustering", layout="wide")

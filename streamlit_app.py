@@ -1,264 +1,224 @@
 import streamlit as st
 import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
 from census import Census
 from us import states
-import plotly.express as px
 from sklearn.cluster import KMeans
-from sklearn.preprocessing import StandardScaler
-import google.generativeai as genai
-import json
-import itertools
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+import numpy as np
 
-# --- Configuration & Setup ---
-st.set_page_config(page_title="Demographic Persona Generator", layout="wide")
+# --- 1. CONFIGURATION & MAPPINGS ---
+st.set_page_config(page_title="Census PUMS Clustering", layout="wide")
 
-# Check secrets
-if "CENSUS_API_KEY" not in st.secrets or "GOOGLE_API_KEY" not in st.secrets:
-    st.error("Please add CENSUS_API_KEY and GOOGLE_API_KEY to your .streamlit/secrets.toml file.")
-    st.stop()
+# Map FIPS codes to State Names
+STATE_FIPS = {state.fips: state.name for state in states.STATES}
+STATE_NAME_TO_FIPS = {v: k for k, v in STATE_FIPS.items()}
 
-# Initialize APIs
-c = Census(st.secrets["CENSUS_API_KEY"])
-genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-
-# --- Session State Initialization ---
-if 'data_loaded' not in st.session_state:
-    st.session_state.data_loaded = False
-if 'df_filtered' not in st.session_state:
-    st.session_state.df_filtered = None
-if 'summary_df' not in st.session_state:
-    st.session_state.summary_df = None
-
-# --- Census Variables Mapping ---
-CENSUS_VARS = {
-    'B01002_001E': 'Median Age',
-    'B19013_001E': 'Median Income',
-    'B01003_001E': 'Population',
-    # Education
-    'B15003_001E': 'Edu_Total',
-    'B15003_022E': 'Edu_Bach',
-    'B15003_023E': 'Edu_Mast',
-    'B15003_024E': 'Edu_Prof',
-    'B15003_025E': 'Edu_Doc',
-    # Housing Tenure
-    'B25003_001E': 'Housing_Total',
-    'B25003_002E': 'Housing_Owner',
-    # Household Structure
-    'B11001_001E': 'HH_Total',
-    'B11001_002E': 'HH_Family'
+# Education Level Mapping (SCHL Code -> Readable Name)
+# Based on ACS Data Dictionary
+EDUCATION_MAP = {
+    'bb': 'N/A (under 3)',
+    '01': 'No schooling',
+    '02': 'Nursery to 4th grade',
+    '03': '5th or 6th grade',
+    '04': '7th or 8th grade',
+    '05': '9th grade',
+    '06': '10th grade',
+    '07': '11th grade',
+    '08': '12th grade (no diploma)',
+    '09': 'High School Diploma',
+    '10': 'GED or alternative',
+    '11': 'Some college, <1 year',
+    '12': 'Some college, >1 year',
+    '13': 'Associate\'s degree',
+    '14': 'Associate\'s degree',
+    '15': 'Bachelor\'s degree',
+    '16': 'Master\'s degree',
+    '17': 'Professional degree',
+    '18': 'Doctorate degree',
+    '19': 'Grade 12', # Occasionally appears in some cuts
+    '20': 'Bachelor\'s degree', # Redundant handling
+    '21': 'Master\'s degree',
+    '22': 'Professional degree',
+    '23': 'Doctorate degree',
+    '24': 'Doctorate degree'
 }
 
-# --- Helper Functions ---
+# Household Type Mapping (HHT Code -> Readable Name)
+HHT_MAP = {
+    '1': 'Married couple household',
+    '2': 'Male householder, no spouse',
+    '3': 'Female householder, no spouse',
+    '4': 'Male living alone',
+    '5': 'Male not living alone',
+    '6': 'Female living alone',
+    '7': 'Female not living alone',
+    'b': 'N/A (Group Quarters)'
+}
 
+# --- 2. DATA FETCHING FUNCTION ---
 @st.cache_data
-def get_census_data(state_fips):
-    """Fetches county-level data and calculates derived demographic percentages."""
+def get_census_data(api_key, state_fips, limit=5000):
+    """
+    Fetches PUMS data for Age (AGEP), Income (HINCP), 
+    Household Type (HHT), and Education (SCHL).
+    """
     try:
-        data = c.acs5.state_county(
-            fields=list(CENSUS_VARS.keys()) + ['NAME'],
+        c = Census(api_key)
+        
+        # Fetching variables:
+        # AGEP: Age
+        # HINCP: Household Income
+        # HHT: Household/Family Type
+        # SCHL: Educational Attainment
+        
+        # We target the most recent available ACS 1-Year data (usually 2021 or 2022 depending on lib version)
+        # Using 2021 as a safe default for 'census' library stability
+        data = c.acs1.state(
+            fields=('AGEP', 'HINCP', 'HHT', 'SCHL'),
             state_fips=state_fips,
-            county_fips="*"
+            year=2021 
         )
+        
         df = pd.DataFrame(data)
         
-        # Rename columns based on mapping
-        df = df.rename(columns=CENSUS_VARS)
+        # Convert numeric columns
+        df['AGEP'] = pd.to_numeric(df['AGEP'], errors='coerce')
+        df['HINCP'] = pd.to_numeric(df['HINCP'], errors='coerce')
         
-        # Convert to numeric
-        numeric_cols = list(CENSUS_VARS.values())
-        for col in numeric_cols:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
+        # Drop rows with missing core data (often due to vacant houses or group quarters)
+        df = df.dropna(subset=['AGEP', 'HINCP', 'HHT', 'SCHL'])
+        
+        # Filter out negative income if preferred, or keep for debt analysis
+        # Filtering empty strings or bad codes
+        df = df[df['HHT'] != 'b']
+        
+        # Limit sample size for performance in a demo app
+        if len(df) > limit:
+            df = df.sample(limit, random_state=42)
             
-        # --- Feature Engineering ---
-        # 1. Education: % Bachelor's Degree or Higher
-        df['Edu_Sum_Higher'] = df['Edu_Bach'] + df['Edu_Mast'] + df['Edu_Prof'] + df['Edu_Doc']
-        df['Pct Bachelor+'] = (df['Edu_Sum_Higher'] / df['Edu_Total']) * 100
-        
-        # 2. Housing: % Owner Occupied
-        df['Pct Owner Occupied'] = (df['Housing_Owner'] / df['Housing_Total']) * 100
-        
-        # 3. Structure: % Family Households
-        df['Pct Family Households'] = (df['HH_Family'] / df['HH_Total']) * 100
-        
-        # Clean up infinite values or NaNs from division by zero
-        final_cols = ['NAME', 'Population', 'Median Age', 'Median Income', 
-                      'Pct Bachelor+', 'Pct Owner Occupied', 'Pct Family Households']
-        
-        df = df[final_cols].dropna()
-        
         return df
+        
     except Exception as e:
-        st.error(f"Error fetching Census data: {e}")
+        st.error(f"Error fetching data: {e}")
         return pd.DataFrame()
 
-def generate_personas(cluster_summary):
-    """Generates persona names using Gemini based on 5 demographic variables."""
-    model = genai.GenerativeModel('gemini-2.5-flash')
-    
-    # Create a string representation of the clusters
-    cluster_text = ""
-    for index, row in cluster_summary.iterrows():
-        cluster_text += (
-            f"Cluster {index}: "
-            f"Age {row['Median Age']:.1f}, "
-            f"Income ${row['Median Income']:,.0f}, "
-            f"Education (Bach+) {row['Pct Bachelor+']:.1f}%, "
-            f"Home Ownership {row['Pct Owner Occupied']:.1f}%, "
-            f"Family Households {row['Pct Family Households']:.1f}%\n"
-        )
+# --- 3. MAIN APPLICATION ---
 
-    prompt = f"""
-    You are a demographic analyst. I have clustered US counties based on Age, Income, Education, Housing Tenure, and Household Structure.
-    Here are the statistics for each cluster:
-    
-    {cluster_text}
-    
-    For EACH cluster, provide:
-    1. A creative, short "Persona Name" (e.g., "Educated Suburban Families", "Retiring Rural Owners").
-    2. A short objective description (max 2 sentences) explaining *why* they fit this name based on the specific variables provided.
-    
-    Return the response strictly as a JSON list of objects with keys: "cluster_id", "persona_name", "description". 
-    Do not include markdown formatting like ```json. Just the raw JSON string.
-    """
-    
-    try:
-        response = model.generate_content(prompt)
-        text_response = response.text.replace("```json", "").replace("```", "").strip()
-        return json.loads(text_response)
-    except Exception as e:
-        st.error(f"Error generating personas with Gemini: {e}")
-        return []
+st.title("📊 Census PUMS Clustering Explorer")
+st.markdown("Cluster population data based on **Age**, **Income**, **Household Type**, and **Education**.")
 
-# --- Main App Interface ---
+# --- SIDEBAR CONTROLS ---
+st.sidebar.header("Configuration")
+api_key = st.sidebar.text_input("Enter Census API Key", type="password", help="Get one at api.census.gov")
+selected_state = st.sidebar.selectbox("Select State", list(STATE_NAME_TO_FIPS.keys()))
+n_clusters = st.sidebar.slider("Number of Clusters", min_value=2, max_value=8, value=3)
 
-st.title("🇺🇸 Deep Demographic Clustering")
-st.markdown("Analyze US counties by Age, Income, Education, Housing & Family Structure.")
+# --- VISUALIZATION CONTROLS ---
+st.sidebar.subheader("Graph Settings")
+x_axis = st.sidebar.selectbox("X Axis", ['Age', 'Income', 'Education Code', 'Household Type Code'])
+y_axis = st.sidebar.selectbox("Y Axis", ['Income', 'Age', 'Education Code', 'Household Type Code'])
 
-# Sidebar Controls
-with st.sidebar:
-    st.header("Settings")
-    
-    state_list = [s.name for s in states.STATES]
-    selected_state_name = st.selectbox("Select State", state_list, index=state_list.index("California"))
-    selected_state = states.lookup(selected_state_name)     
-    
-    min_pop = st.number_input("Minimum County Population", min_value=0, value=10000, step=1000)
-    num_clusters = st.slider("Number of Clusters", min_value=2, max_value=8, value=4)
-    
-    # Logic: If inputs change, we might want to reset the "loaded" state, 
-    # but for now, we rely on the button to force a new run.
-    run_btn = st.button("Run Analysis", type="primary")
+if not api_key:
+    st.warning("Please enter your Census API Key in the sidebar to proceed.")
+    st.stop()
 
-# --- Processing Block (Only runs when button clicked) ---
-if run_btn:
-    with st.spinner(f"Fetching Census data for {selected_state_name}..."):
-        df = get_census_data(selected_state.fips)
+# --- FETCH AND PROCESS DATA ---
+with st.spinner(f"Fetching data for {selected_state}..."):
+    raw_df = get_census_data(api_key, STATE_NAME_TO_FIPS[selected_state])
 
-    if not df.empty:
-        df_filtered = df[df['Population'] >= min_pop].copy()
-        
-        if len(df_filtered) < num_clusters:
-            st.error(f"Not enough counties remain after filtering (Count: {len(df_filtered)}). Decrease the population threshold.")
-            st.session_state.data_loaded = False
-        else:
-            # --- Machine Learning Step ---
-            features = ['Median Age', 'Median Income', 'Pct Bachelor+', 'Pct Owner Occupied', 'Pct Family Households']
-            X = df_filtered[features]
-            
-            scaler = StandardScaler()
-            X_scaled = scaler.fit_transform(X)
-            
-            kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init=10)
-            df_filtered['Cluster'] = kmeans.fit_predict(X_scaled)
-            
-            # Calculate Cluster Centers
-            centers_scaled = kmeans.cluster_centers_
-            centers = scaler.inverse_transform(centers_scaled)
-            
-            summary_df = pd.DataFrame(centers, columns=features)
-            summary_df['Counties in Cluster'] = df_filtered['Cluster'].value_counts().sort_index()
-            
-            # --- GenAI Step ---
-            with st.spinner("Generating detailed personas with Gemini..."):
-                personas = generate_personas(summary_df)
-            
-            # Process GenAI Results
-            if personas:
-                persona_map = {p['cluster_id']: p for p in personas}
-                
-                summary_df['Persona Name'] = summary_df.index.map(lambda x: persona_map.get(x, {}).get('persona_name', 'Unknown'))
-                summary_df['Description'] = summary_df.index.map(lambda x: persona_map.get(x, {}).get('description', 'No description'))
-                
-                df_filtered['Persona Name'] = df_filtered['Cluster'].map(lambda x: persona_map.get(x, {}).get('persona_name', f'Cluster {x}'))
-            
-            # --- Save to Session State ---
-            st.session_state.df_filtered = df_filtered
-            st.session_state.summary_df = summary_df
-            st.session_state.data_loaded = True
-
-    else:
-        st.warning("No data found. Please check your API key or try a different state.")
-        st.session_state.data_loaded = False
-
-# --- Visualization Block (Runs if data is loaded) ---
-if st.session_state.data_loaded:
+if raw_df.empty:
+    st.error("No data found. Please check your API key or try another state.")
+else:
+    # --- DATA PREPROCESSING ---
+    # Create readable labels columns for display
+    raw_df['Education Level'] = raw_df['SCHL'].map(EDUCATION_MAP).fillna('Unknown')
+    raw_df['Household Type'] = raw_df['HHT'].map(HHT_MAP).fillna('Unknown')
     
-    # Retrieve data from session state
-    df_filtered = st.session_state.df_filtered
-    summary_df = st.session_state.summary_df
-    features = ['Median Age', 'Median Income', 'Pct Bachelor+', 'Pct Owner Occupied', 'Pct Family Households']
+    # Encode Categoricals for Clustering (Education is Ordinal, HHT is Nominal)
+    # 1. Age & Income are already numeric.
+    # 2. Education: Map codes to integers (they are roughly ordinal in the source)
+    raw_df['SCHL_Code'] = pd.to_numeric(raw_df['SCHL'], errors='coerce').fillna(0)
     
-    st.success("Analysis Complete!")
+    # 3. HHT: It's nominal. For clustering, we usually One-Hot Encode, 
+    # but to keep the dataframe simple for the "X vs Y" scatter plot request,
+    # we will use a Label Encoder for the 'cluster input' specifically, or simple numeric mapping.
+    # For better clustering, we'll dummy encode HHT.
     
-    # 1. Visualization Controls (Cycle through combinations)
-    st.subheader("Visual Analysis")
+    features = raw_df[['AGEP', 'HINCP', 'SCHL_Code']].copy()
     
-    # Generate all unique pairs of features for the graph options
-    feature_pairs = list(itertools.combinations(features, 2))
-    graph_options = {f"{x} vs {y}": (x, y) for x, y in feature_pairs}
+    # One-Hot Encode HHT for the algorithm
+    hht_dummies = pd.get_dummies(raw_df['HHT'], prefix='HHT')
+    cluster_input = pd.concat([features, hht_dummies], axis=1)
     
-    # User Selector
-    col1, col2 = st.columns([1, 3])
-    with col1:
-        st.markdown("**Graph Filter**")
-        selected_graph_label = st.radio(
-            "Choose Graph Combination:", 
-            list(graph_options.keys()),
-            index=0 
-        )
-        x_axis, y_axis = graph_options[selected_graph_label]
+    # Scaling
+    scaler = StandardScaler()
+    scaled_data = scaler.fit_transform(cluster_input)
     
-    with col2:
-        fig = px.scatter(
-            df_filtered,
-            x=x_axis,
-            y=y_axis,
-            color='Persona Name',
-            hover_data=['NAME', 'Population'] + features,
-            size='Population',
-            title=f"{selected_graph_label} (Colored by Persona)",
-            template="plotly_white",
-            height=500
-        )
-        fig.update_layout(legend_title_text='AI Persona')
-        st.plotly_chart(fig, use_container_width=True)
+    # --- CLUSTERING ---
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+    raw_df['Cluster'] = kmeans.fit_predict(scaled_data)
     
-    # 2. Detailed Summary Table
-    st.divider()
-    st.subheader("Cluster Personas & Statistics")
+    # --- MAPPING SELECTION FOR PLOTTING ---
+    # Map user selection to dataframe columns
+    col_map = {
+        'Age': 'AGEP',
+        'Income': 'HINCP',
+        'Education Code': 'SCHL_Code',
+        'Household Type Code': 'HHT'
+    }
     
-    # Formatting for display
-    summary_display = summary_df.copy()
-    summary_display['Median Income'] = summary_display['Median Income'].apply(lambda x: f"${x:,.0f}")
-    summary_display['Median Age'] = summary_display['Median Age'].apply(lambda x: f"{x:.1f}")
-    summary_display['Pct Bachelor+'] = summary_display['Pct Bachelor+'].apply(lambda x: f"{x:.1f}%")
-    summary_display['Pct Owner Occupied'] = summary_display['Pct Owner Occupied'].apply(lambda x: f"{x:.1f}%")
-    summary_display['Pct Family Households'] = summary_display['Pct Family Households'].apply(lambda x: f"{x:.1f}%")
+    # --- VISUALIZATION ---
+    st.subheader(f"{selected_state}: {x_axis} vs {y_axis} by Cluster")
     
-    cols = ['Persona Name', 'Median Age', 'Median Income', 'Pct Bachelor+', 'Pct Owner Occupied', 'Pct Family Households', 'Counties in Cluster', 'Description']
+    fig, ax = plt.subplots(figsize=(10, 6))
     
-    st.dataframe(
-        summary_display[cols], 
-        hide_index=True, 
-        use_container_width=True
+    # If using categorical columns on axes, ensure they are sorted/numeric for plotting
+    plot_x = col_map[x_axis]
+    plot_y = col_map[y_axis]
+    
+    # Use seaborn for a clean scatter plot
+    sns.scatterplot(
+        data=raw_df, 
+        x=plot_x, 
+        y=plot_y, 
+        hue='Cluster', 
+        palette='viridis', 
+        alpha=0.6,
+        ax=ax,
+        s=50
     )
+    
+    plt.title(f"Clustering Results: {x_axis} vs {y_axis}")
+    plt.xlabel(x_axis)
+    plt.ylabel(y_axis)
+    st.pyplot(fig)
+    
+    # --- SUMMARY TABLE ---
+    st.subheader("Cluster Summaries")
+    
+    # Calculate modes for categorical data and means for numerical
+    summary = raw_df.groupby('Cluster').agg({
+        'AGEP': 'mean',
+        'HINCP': 'mean',
+        'Education Level': lambda x: x.mode()[0] if not x.mode().empty else 'N/A',
+        'Household Type': lambda x: x.mode()[0] if not x.mode().empty else 'N/A',
+        'Cluster': 'count' # To get size
+    }).rename(columns={'Cluster': 'Count'})
+    
+    # Format the summary for readability
+    summary['AGEP'] = summary['AGEP'].round(1).astype(str) + " years"
+    summary['HINCP'] = summary['HINCP'].apply(lambda x: f"${x:,.0f}")
+    summary = summary.rename(columns={
+        'AGEP': 'Average Age',
+        'HINCP': 'Average Income',
+        'Education Level': 'Most Common Education',
+        'Household Type': 'Most Common Household'
+    })
+    
+    st.table(summary)
+    
+    # --- RAW DATA EXPANDER ---
+    with st.expander("View Raw Data Sample"):
+        st.dataframe(raw_df[['AGEP', 'HINCP', 'Education Level', 'Household Type', 'Cluster']].head(100))

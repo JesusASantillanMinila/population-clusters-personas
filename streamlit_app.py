@@ -24,6 +24,9 @@ EDUCATION_MAP = {
     '23': 'Professional Degree', '24': 'Doctorate'
 }
 
+# Define a logical sort order for Education for the graph axis
+EDU_ORDER = list(EDUCATION_MAP.values()) + ['Other/Less than HS']
+
 # 1: Married, 2: Other Family, 3: Non-Family, etc.
 HHT_MAP = {
     '1': 'Married Couple', '2': 'Male Householder (No Spouse)',
@@ -61,6 +64,7 @@ def process_data(df):
     bins = [18, 30, 45, 60, 100]
     labels = ['18-30', '31-45', '46-60', '60+']
     df['Age Range'] = pd.cut(df['AGEP'], bins=bins, labels=labels)
+    # Create readable columns
     df['Education Level'] = df['SCHL'].astype(str).map(EDUCATION_MAP).fillna('Other/Less than HS')
     df['Household Type'] = df['HHT'].astype(str).map(HHT_MAP).fillna('Unknown')
     return df
@@ -95,7 +99,7 @@ if st.sidebar.button("Fetch & Analyze Data"):
         if not raw_df.empty:
             df = process_data(raw_df)
             
-            # Clustering
+            # Clustering (Use numeric codes for the math, but we plot with labels later)
             features = ['AGEP', 'PINCP', 'HHT', 'SCHL']
             scaler = StandardScaler()
             scaled_features = scaler.fit_transform(df[features])
@@ -116,33 +120,48 @@ if st.session_state['data'] is not None:
     st.divider()
     st.subheader("📊 Cluster Visualizations")
     
-    # Define features for plotting
+    # Updated: Map UI choices to HUMAN READABLE columns, not codes
     plot_vars = {
         'Age': 'AGEP',
         'Income': 'PINCP',
-        'Education Code': 'SCHL',
-        'Household Code': 'HHT'
+        'Education': 'Education Level',   # Changed from 'SCHL'
+        'Household Type': 'Household Type' # Changed from 'HHT'
     }
     
     combinations = list(itertools.combinations(plot_vars.keys(), 2))
     combo_labels = [f"{x} vs {y}" for x, y in combinations]
     
-    # Selecting this box will rerun the script, but `st.session_state['data']` persists!
     selected_combo = st.selectbox("Select Graph to Show:", combo_labels)
     
     x_label, y_label = next(
         (x, y) for x, y in combinations if f"{x} vs {y}" == selected_combo
     )
     
+    # Prepare data for plotting
+    plot_df = df.sample(min(2000, len(df))).copy()
+    
+    # IMPORTANT: Convert Cluster to string to ensure DISCRETE Color Legend (not gradient)
+    plot_df['Cluster'] = plot_df['Cluster'].astype(str)
+    
     fig = px.scatter(
-        df.sample(min(2000, len(df))), 
+        plot_df, 
         x=plot_vars[x_label], 
         y=plot_vars[y_label],
         color='Cluster',
         title=f"Clusters: {x_label} vs {y_label}",
         hover_data=['Age Range', 'Education Level', 'Household Type'],
-        color_continuous_scale=px.colors.qualitative.Plotly
+        # Define readable axis titles
+        labels={
+            'AGEP': 'Age (Years)',
+            'PINCP': 'Annual Income ($)',
+            'Education Level': 'Education Degree',
+            'Household Type': 'Household Composition',
+            'Cluster': 'Cluster Group'
+        },
+        # Ensure Education sorts logically (HS -> PhD), not alphabetically
+        category_orders={'Education Level': EDU_ORDER}
     )
+    
     st.plotly_chart(fig, use_container_width=True)
     
     # --- Summary Table ---

@@ -189,4 +189,4 @@ if st.session_state['data'] is not None:
     st.table(summary)
 
 elif st.session_state['data'] is None:
-    st.info("Select a state and click 'Fetch & Analyze Data' to begin.")
+    st.info("Select a state and the number of clusters to create")

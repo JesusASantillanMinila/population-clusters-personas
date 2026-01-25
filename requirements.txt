@@ -5,3 +5,4 @@ us
 scikit-learn
 plotly
 google-generativeai
+seaborn

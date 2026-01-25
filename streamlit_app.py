@@ -7,7 +7,7 @@ import plotly.express as px
 import itertools 
 
 # --- 1. Configuration & Dictionaries ---
-st.set_page_config(page_title="Census PUMS Clustering", layout="wide")
+st.set_page_config(page_title="US Population  Personas Clustering", layout="wide")
 
 # Map of State Names to FIPS Codes
 STATE_FIPS = {
@@ -71,8 +71,7 @@ def process_data(df):
 
 # --- 3. Main Streamlit App ---
 
-st.title("🇺🇸 Census PUMS Clustering Analysis")
-st.markdown("Fetch PUMS data, create clusters, and visualize population segments.")
+st.title("US Population  Personas Clustering")
 
 # --- Sidebar Inputs ---
 st.sidebar.header("Configuration")
@@ -91,8 +90,8 @@ if 'data' not in st.session_state:
     st.session_state['data'] = None
 
 # --- Data Loading Logic ---
-if st.sidebar.button("Fetch & Analyze Data"):
-    with st.spinner(f"Fetching PUMS data for {selected_state}..."):
+if st.sidebar.button("Execute"):
+    with st.spinner(f"Fetching census data for {selected_state}..."):
         fips = STATE_FIPS[selected_state]
         raw_df = fetch_pums_data(fips, api_key)
         
@@ -184,8 +183,8 @@ if st.session_state['data'] is not None:
         'Age Range': 'Most Common Age Group'
     })
     
-    summary['Avg Income ($)'] = summary['Avg Income ($)'].apply(lambda x: f"${x:,.2f}")
-    summary['Avg Age'] = summary['Avg Age'].round(1)
+    summary['Avg Income ($)'] = summary['Avg Income ($)'].apply(lambda x: f"${x:,}")
+    summary['Avg Age'] = summary['Avg Age'].round(0)
     
     st.table(summary)
 

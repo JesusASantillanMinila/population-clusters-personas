@@ -183,8 +183,8 @@ if st.session_state['data'] is not None:
         'Age Range': 'Most Common Age Group'
     })
     
-    summary['Avg Income ($)'] = summary['Avg Income ($)'].apply(lambda x: f"${x:,}")
-    summary['Avg Age'] = summary['Avg Age'].round(0)
+    summary['Avg Income ($)'] = summary['Avg Income ($)'].round().apply(lambda x: f"${x:,}")
+    summary['Avg Age'] = summary['Avg Age'].round()
     
     st.table(summary)
 

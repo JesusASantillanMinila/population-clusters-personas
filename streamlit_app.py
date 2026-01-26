@@ -112,7 +112,13 @@ else:
 # --- Sidebar converted to Expander ---
 with st.expander("Configuration", expanded=True):
   
-    st.write("Select a state and the number of clusters to create")
+    st.markdown("""
+    **Instructions:**
+    1. Select a **US State** from the dropdown.
+    2. Choose the **Number of Clusters** (groups) to identify.
+    3. Click **Execute** to analyze demographics and generate AI personas.
+    """)
+    # --------------------------------
     
     col1, col2 = st.columns(2)
     with col1:
@@ -204,29 +210,20 @@ if st.session_state['data'] is not None:
 
     # Add AI Persona Name and Description to the final summary
     final_summary['Persona Name'] = final_summary['Cluster'].map(lambda x: persona_map[x]['name'])
-    final_summary['AI Description'] = final_summary['Cluster'].map(lambda x: persona_map[x]['desc'])
+    final_summary['Persona Description'] = final_summary['Cluster'].map(lambda x: persona_map[x]['desc'])
     
     # Clean up formatting
     final_summary['Avg Income ($)'] = final_summary['PINCP'].round().astype(int).apply(lambda x: f"${x:,}")
     final_summary['Avg Age'] = final_summary['AGEP'].round().astype(int)
     
     # Reorder columns for readability
-    display_cols = ['Persona Name', 'AI Description', 'Avg Income ($)', 'Avg Age', 'Education Level', 'Household Type']
+    display_cols = ['Persona Name', 'Persona Description', 'Avg Income ($)', 'Avg Age', 'Education Level', 'Household Type']
     
-    # CHANGE 3: Column config added to ensure the description is fully visible
-    st.dataframe(
-        final_summary[display_cols], 
-        hide_index=True, 
-        use_container_width=True,
-        column_config={
-            "AI Description": st.column_config.TextColumn(
-                "AI Description",
-                width="large",
-                help="AI generated description of the cluster"
-            )
-        }
+    # We use .style.hide() to remove the index, and set formatting specific to the table view
+    st.table(
+        final_summary[display_cols].style.hide(axis="index")
+    ) }
     )
 
 elif st.session_state['data'] is None:
-    # Instruction already displayed in the expander at the top
     pass

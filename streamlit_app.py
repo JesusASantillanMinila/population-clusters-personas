@@ -17,11 +17,19 @@ if "GOOGLE_API_KEY" in st.secrets:
 else:
     st.error("GOOGLE_API_KEY not found in secrets.")
 
-STATE_FIPS = {
-    "Alabama": "01", "California": "06", "Colorado": "08", 
-    "Florida": "12", "Georgia": "13", "Illinois": "17", 
-    "New York": "36", "Texas": "48", "Virginia": "51", "Washington": "53"
-}
+# Load State FIPS from CSV instead of hardcoding
+@st.cache_data
+def load_fips_data():
+    try:
+        df = pd.read_csv('state_fips.csv')
+        # Ensure FIPS are strings and have leading zeros (e.g., 1 -> '01')
+        df['FIPS'] = df['FIPS'].astype(str).str.zfill(2)
+        return dict(zip(df['State'], df['FIPS']))
+    except FileNotFoundError:
+        st.error("state_fips.csv not found. Please ensure the file exists.")
+        return {}
+
+STATE_FIPS = load_fips_data()
 
 EDUCATION_MAP = {
     '16': 'High School Diploma', '17': 'GED', '18': 'Some College (<1yr)',
@@ -48,7 +56,7 @@ def generate_persona(row):
     - Average Age: {row['Avg Age']}
     - Most Common Education: {row['Most Common Education']}
     - Most Common Household: {row['Most Common Household']}
-    
+     
     Create a short, catchy 'Persona Name' (2-4 words) and a brief 2-sentence description of their lifestyle.
     Format your response exactly like this:
     Name: [Name Here]
@@ -94,22 +102,25 @@ def process_data(df):
 
 st.title("US Population Personas Clustering")
 
-st.sidebar.header("Configuration")
+# Check for API Key before rendering sidebar controls
 if "CENSUS_API_KEY" in st.secrets:
     api_key = st.secrets["CENSUS_API_KEY"]
 else:
-    st.sidebar.error("CENSUS_API_KEY not found in secrets.")
+    st.error("CENSUS_API_KEY not found in secrets.")
     st.stop()
 
-selected_state = st.sidebar.selectbox("Select US State", list(STATE_FIPS.keys()))
-n_clusters = st.sidebar.slider("Number of Clusters (k)", 2, 8, 3)
+# --- Sidebar converted to Expander ---
+with st.expander("Configuration", expanded=True):
+    selected_state = st.selectbox("Select US State", list(STATE_FIPS.keys()))
+    n_clusters = st.slider("Number of Clusters (k)", 2, 8, 3)
+    execute_btn = st.button("Execute")
 
 if 'data' not in st.session_state:
     st.session_state['data'] = None
 if 'persona_map' not in st.session_state:
     st.session_state['persona_map'] = {}
 
-if st.sidebar.button("Execute"):
+if execute_btn:
     with st.spinner(f"Analyzing {selected_state} demographics with AI..."):
         fips = STATE_FIPS[selected_state]
         raw_df = fetch_pums_data(fips, api_key)
@@ -165,7 +176,7 @@ if st.session_state['data'] is not None:
         plot_df, 
         x=plot_vars[x_label], 
         y=plot_vars[y_label],
-        color='Persona Name', # Legend now shows Persona Name
+        color='Persona Name', 
         title=f"Persona Distribution: {x_label} vs {y_label}",
         hover_data=['Education Level', 'Household Type'],
         labels={'AGEP': 'Age', 'PINCP': 'Annual Income', 'Persona Name': 'Market Persona'},
@@ -194,7 +205,8 @@ if st.session_state['data'] is not None:
     
     # Reorder columns for readability
     display_cols = ['Persona Name', 'AI Description', 'Avg Income ($)', 'Avg Age', 'Education Level', 'Household Type']
-    st.table(final_summary[display_cols])
+    
+    st.dataframe(final_summary[display_cols], hide_index=True, use_container_width=True)
 
 elif st.session_state['data'] is None:
     st.info("Select a state and the number of clusters to create")

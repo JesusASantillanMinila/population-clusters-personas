@@ -4,7 +4,7 @@ import requests
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 import plotly.express as px
-import itertools  
+import itertools
 import google.generativeai as genai
 
 # --- 1. Configuration & Dictionaries ---
@@ -111,8 +111,15 @@ else:
 
 # --- Sidebar converted to Expander ---
 with st.expander("Configuration", expanded=True):
-    selected_state = st.selectbox("Select US State", list(STATE_FIPS.keys()))
-    n_clusters = st.slider("Number of Clusters (k)", 2, 8, 3)
+  
+    st.write("Select a state and the number of clusters to create")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        selected_state = st.selectbox("Select US State", list(STATE_FIPS.keys()))
+    with col2:
+        n_clusters = st.slider("Number of Clusters (k)", 2, 8, 3)
+        
     execute_btn = st.button("Execute")
 
 if 'data' not in st.session_state:
@@ -206,7 +213,20 @@ if st.session_state['data'] is not None:
     # Reorder columns for readability
     display_cols = ['Persona Name', 'AI Description', 'Avg Income ($)', 'Avg Age', 'Education Level', 'Household Type']
     
-    st.dataframe(final_summary[display_cols], hide_index=True, use_container_width=True)
+    # CHANGE 3: Column config added to ensure the description is fully visible
+    st.dataframe(
+        final_summary[display_cols], 
+        hide_index=True, 
+        use_container_width=True,
+        column_config={
+            "AI Description": st.column_config.TextColumn(
+                "AI Description",
+                width="large",
+                help="AI generated description of the cluster"
+            )
+        }
+    )
 
 elif st.session_state['data'] is None:
-    st.info("Select a state and the number of clusters to create")
+    # Instruction already displayed in the expander at the top
+    pass

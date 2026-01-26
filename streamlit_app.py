@@ -222,7 +222,6 @@ if st.session_state['data'] is not None:
     # We use .style.hide() to remove the index, and set formatting specific to the table view
     st.table(
         final_summary[display_cols].style.hide(axis="index")
-    ) }
     )
 
 elif st.session_state['data'] is None:

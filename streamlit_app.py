@@ -74,19 +74,36 @@ def generate_persona(row):
 
 @st.cache_data
 def fetch_pums_data(state_fips, api_key):
+    # Added PUMA to the get request
     base_url = "https://api.census.gov/data/2022/acs/acs1/pums"
-    params = {"get": "AGEP,PINCP,HHT,SCHL", "for": f"state:{state_fips}", "key": api_key}
+    params = {"get": "AGEP,PINCP,HHT,SCHL,PUMA", "for": f"state:{state_fips}", "key": api_key}
     try:
         response = requests.get(base_url, params=params)
         response.raise_for_status()
         data = response.json()
         df = pd.DataFrame(data[1:], columns=data[0])
+        # PUMA remains a string to preserve leading zeros
         cols = ['AGEP', 'PINCP', 'HHT', 'SCHL']
         for c in cols:
             df[c] = pd.to_numeric(df[c], errors='coerce')
         return df.dropna()
     except Exception as e:
         st.error(f"Error fetching data: {e}")
+        return pd.DataFrame()
+
+@st.cache_data
+def get_puma_locations(state_fips):
+    """Fetches approximate coordinates for PUMAs using Census Gazetteers."""
+    url = f"https://www2.census.gov/geo/docs/maps-data/data/gazetteer/2022_Gazetteer/2022_gaz_pumas_{state_fips}.txt"
+    try:
+        # PUMA gazetteer files are tab-separated
+        df_coords = pd.read_csv(url, sep='\t', dtype={'GEOID': str})
+        df_coords.columns = df_coords.columns.str.strip()
+        # Extract PUMA from GEOID (last 5 digits)
+        df_coords['PUMA'] = df_coords['GEOID'].str[-5:]
+        return df_coords[['PUMA', 'INTPTLAT', 'INTPTLON']]
+    except Exception as e:
+        st.error(f"Could not load geographic data: {e}")
         return pd.DataFrame()
 
 def process_data(df):
@@ -140,6 +157,14 @@ if execute_btn:
         
         if not raw_df.empty:
             df = process_data(raw_df)
+            
+            # --- Obtain Geographical Data ---
+            geo_df = get_puma_locations(fips)
+            if not geo_df.empty:
+                df = df.merge(geo_df, on='PUMA', how='left')
+                df['INTPTLAT'] = pd.to_numeric(df['INTPTLAT'])
+                df['INTPTLON'] = pd.to_numeric(df['INTPTLON'])
+
             features = ['AGEP', 'PINCP', 'HHT', 'SCHL']
             scaler = StandardScaler()
             scaled_features = scaler.fit_transform(df[features])
@@ -177,6 +202,27 @@ if st.session_state['data'] is not None:
     
     st.divider()
     st.subheader("📊 Cluster Visualizations")
+    
+    # --- New Map Section ---
+    st.write("### Geographic Persona Distribution")
+    map_df = df.sample(min(3000, len(df))).copy()
+    if 'INTPTLAT' in map_df.columns:
+        fig_map = px.scatter_mapbox(
+            map_df,
+            lat="INTPTLAT",
+            lon="INTPTLON",
+            color="Persona Name",
+            size_max=15,
+            zoom=5,
+            mapbox_style="carto-positron",
+            title=f"Geographic Clustering in {selected_state}",
+            hover_data=['Avg Age' if 'Avg Age' in map_df.columns else 'AGEP']
+        )
+        st.plotly_chart(fig_map, use_container_width=True)
+    else:
+        st.info("Geographic coordinates not available for this state.")
+
+    st.divider()
     
     plot_vars = {'Age': 'AGEP', 'Income': 'PINCP', 'Education': 'Education Level', 'Household Type': 'Household Type'}
     combinations = list(itertools.combinations(plot_vars.keys(), 2))

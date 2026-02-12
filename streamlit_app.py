@@ -74,7 +74,7 @@ def generate_persona(row):
 
 @st.cache_data
 def fetch_pums_data(state_fips, api_key):
-    # Added PUMA to the get request
+    # Added PUMA to the get request to capture geographical area
     base_url = "https://api.census.gov/data/2022/acs/acs1/pums"
     params = {"get": "AGEP,PINCP,HHT,SCHL,PUMA", "for": f"state:{state_fips}", "key": api_key}
     try:
@@ -82,7 +82,10 @@ def fetch_pums_data(state_fips, api_key):
         response.raise_for_status()
         data = response.json()
         df = pd.DataFrame(data[1:], columns=data[0])
-        # PUMA remains a string to preserve leading zeros
+        
+        # Ensure PUMA is a 5-digit string for matching
+        df['PUMA'] = df['PUMA'].astype(str).str.zfill(5)
+        
         cols = ['AGEP', 'PINCP', 'HHT', 'SCHL']
         for c in cols:
             df[c] = pd.to_numeric(df[c], errors='coerce')
@@ -94,16 +97,17 @@ def fetch_pums_data(state_fips, api_key):
 @st.cache_data
 def get_puma_locations(state_fips):
     """Fetches approximate coordinates for PUMAs using Census Gazetteers."""
-    url = f"https://www2.census.gov/geo/docs/maps-data/data/gazetteer/2022_Gazetteer/2022_gaz_pumas_{state_fips}.txt"
+    # Crucial: state_fips must be 2-digits for the URL to avoid 404
+    fips_padded = str(state_fips).zfill(2)
+    url = f"https://www2.census.gov/geo/docs/maps-data/data/gazetteer/2022_Gazetteer/2022_gaz_pumas_{fips_padded}.txt"
     try:
-        # PUMA gazetteer files are tab-separated
-        df_coords = pd.read_csv(url, sep='\t', dtype={'GEOID': str})
+        df_coords = pd.read_csv(url, sep='\t', dtype={'GEOID': str}, encoding='latin-1')
         df_coords.columns = df_coords.columns.str.strip()
-        # Extract PUMA from GEOID (last 5 digits)
+        # Extract 5-digit PUMA from GEOID
         df_coords['PUMA'] = df_coords['GEOID'].str[-5:]
         return df_coords[['PUMA', 'INTPTLAT', 'INTPTLON']]
     except Exception as e:
-        st.error(f"Could not load geographic data: {e}")
+        st.error(f"Could not load geographic data for {fips_padded}: {e}")
         return pd.DataFrame()
 
 def process_data(df):
@@ -158,12 +162,12 @@ if execute_btn:
         if not raw_df.empty:
             df = process_data(raw_df)
             
-            # --- Obtain Geographical Data ---
+            # Fetch Geo Data and Merge
             geo_df = get_puma_locations(fips)
             if not geo_df.empty:
                 df = df.merge(geo_df, on='PUMA', how='left')
-                df['INTPTLAT'] = pd.to_numeric(df['INTPTLAT'])
-                df['INTPTLON'] = pd.to_numeric(df['INTPTLON'])
+                df['INTPTLAT'] = pd.to_numeric(df['INTPTLAT'], errors='coerce')
+                df['INTPTLON'] = pd.to_numeric(df['INTPTLON'], errors='coerce')
 
             features = ['AGEP', 'PINCP', 'HHT', 'SCHL']
             scaler = StandardScaler()
@@ -203,27 +207,25 @@ if st.session_state['data'] is not None:
     st.divider()
     st.subheader("📊 Cluster Visualizations")
     
-    # --- New Map Section ---
-    st.write("### Geographic Persona Distribution")
-    map_df = df.sample(min(3000, len(df))).copy()
-    if 'INTPTLAT' in map_df.columns:
+    # --- Geographic Map ---
+    if 'INTPTLAT' in df.columns:
+        st.write("### Geographic Distribution")
+        # Sample for performance on the map
+        map_sample = df.sample(min(5000, len(df)))
         fig_map = px.scatter_mapbox(
-            map_df,
+            map_sample,
             lat="INTPTLAT",
             lon="INTPTLON",
             color="Persona Name",
-            size_max=15,
+            size_max=10,
             zoom=5,
             mapbox_style="carto-positron",
-            title=f"Geographic Clustering in {selected_state}",
-            hover_data=['Avg Age' if 'Avg Age' in map_df.columns else 'AGEP']
+            height=600,
+            title="Persona Clustering by Location (PUMA Centroids)"
         )
         st.plotly_chart(fig_map, use_container_width=True)
-    else:
-        st.info("Geographic coordinates not available for this state.")
 
-    st.divider()
-    
+    # --- Scatter Plot ---
     plot_vars = {'Age': 'AGEP', 'Income': 'PINCP', 'Education': 'Education Level', 'Household Type': 'Household Type'}
     combinations = list(itertools.combinations(plot_vars.keys(), 2))
     selected_combo = st.selectbox("Select Graph to Show:", [f"{x} vs {y}" for x, y in combinations])
@@ -254,18 +256,14 @@ if st.session_state['data'] is not None:
         'Household Type': lambda x: x.mode()[0]
     }).reset_index()
 
-    # Add AI Persona Name and Description to the final summary
     final_summary['Persona Name'] = final_summary['Cluster'].map(lambda x: persona_map[x]['name'])
     final_summary['Persona Description'] = final_summary['Cluster'].map(lambda x: persona_map[x]['desc'])
     
-    # Clean up formatting
     final_summary['Avg Income ($)'] = final_summary['PINCP'].round().astype(int).apply(lambda x: f"${x:,}")
     final_summary['Avg Age'] = final_summary['AGEP'].round().astype(int)
     
-    # Reorder columns for readability
     display_cols = ['Persona Name', 'Persona Description', 'Avg Income ($)', 'Avg Age', 'Education Level', 'Household Type']
     
-    # We use .style.hide() to remove the index, and set formatting specific to the table view
     st.table(
         final_summary[display_cols].style.hide(axis="index")
     )

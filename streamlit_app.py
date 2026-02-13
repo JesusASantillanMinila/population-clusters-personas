@@ -22,7 +22,6 @@ else:
 def load_fips_data():
     try:
         df = pd.read_csv('state_fips.csv')
-        # Ensure FIPS are strings and have leading zeros (e.g., 1 -> '01')
         df['FIPS'] = df['FIPS'].astype(str).str.zfill(2)
         return dict(zip(df['State'], df['FIPS']))
     except FileNotFoundError:
@@ -49,7 +48,6 @@ HHT_MAP = {
 # --- 2. Helper Functions ---
 
 def generate_persona(row):
-    """Uses Gemini to create a persona name and description based on cluster data."""
     prompt = f"""
     Based on the following demographic data of a population cluster:
     - Average Income: {row['Avg Income ($)']}
@@ -65,16 +63,15 @@ def generate_persona(row):
     try:
         response = model.generate_content(prompt)
         text = response.text
-        # Parsing basic response
         name = text.split("Name:")[1].split("Description:")[0].strip()
         desc = text.split("Description:")[1].strip()
         return name, desc
-    except Exception as e:
+    except Exception:
         return f"Cluster {row['Cluster']}", "No description available."
 
 @st.cache_data
 def fetch_pums_data(state_fips, api_key):
-    # Added PUMA to the get request to capture geographical area
+    # Added PUMA to the fetch request to allow for mapping
     base_url = "https://api.census.gov/data/2022/acs/acs1/pums"
     params = {"get": "AGEP,PINCP,HHT,SCHL,PUMA", "for": f"state:{state_fips}", "key": api_key}
     try:
@@ -82,32 +79,13 @@ def fetch_pums_data(state_fips, api_key):
         response.raise_for_status()
         data = response.json()
         df = pd.DataFrame(data[1:], columns=data[0])
-        
-        # Ensure PUMA is a 5-digit string for matching
-        df['PUMA'] = df['PUMA'].astype(str).str.zfill(5)
-        
-        cols = ['AGEP', 'PINCP', 'HHT', 'SCHL']
+        # Ensure numeric types
+        cols = ['AGEP', 'PINCP', 'HHT', 'SCHL', 'PUMA']
         for c in cols:
             df[c] = pd.to_numeric(df[c], errors='coerce')
         return df.dropna()
     except Exception as e:
         st.error(f"Error fetching data: {e}")
-        return pd.DataFrame()
-
-@st.cache_data
-def get_puma_locations(state_fips):
-    """Fetches approximate coordinates for PUMAs using Census Gazetteers."""
-    # Crucial: state_fips must be 2-digits for the URL to avoid 404
-    fips_padded = str(state_fips).zfill(2)
-    url = f"https://www2.census.gov/geo/docs/maps-data/data/gazetteer/2022_Gazetteer/2022_gaz_pumas_{fips_padded}.txt"
-    try:
-        df_coords = pd.read_csv(url, sep='\t', dtype={'GEOID': str}, encoding='latin-1')
-        df_coords.columns = df_coords.columns.str.strip()
-        # Extract 5-digit PUMA from GEOID
-        df_coords['PUMA'] = df_coords['GEOID'].str[-5:]
-        return df_coords[['PUMA', 'INTPTLAT', 'INTPTLON']]
-    except Exception as e:
-        st.error(f"Could not load geographic data for {fips_padded}: {e}")
         return pd.DataFrame()
 
 def process_data(df):
@@ -123,23 +101,19 @@ def process_data(df):
 
 st.title("US Population Personas Clustering")
 
-# Check for API Key before rendering sidebar controls
 if "CENSUS_API_KEY" in st.secrets:
     api_key = st.secrets["CENSUS_API_KEY"]
 else:
     st.error("CENSUS_API_KEY not found in secrets.")
     st.stop()
 
-# --- Sidebar converted to Expander ---
 with st.expander("Configuration", expanded=True):
-  
     st.markdown("""
     **Instructions:**
     1. Select a **US State** from the dropdown.
     2. Choose the **Number of Clusters** (groups) to identify.
     3. Click **Execute** to analyze demographics and generate AI personas.
     """)
-    # --------------------------------
     
     col1, col2 = st.columns(2)
     with col1:
@@ -161,14 +135,6 @@ if execute_btn:
         
         if not raw_df.empty:
             df = process_data(raw_df)
-            
-            # Fetch Geo Data and Merge
-            geo_df = get_puma_locations(fips)
-            if not geo_df.empty:
-                df = df.merge(geo_df, on='PUMA', how='left')
-                df['INTPTLAT'] = pd.to_numeric(df['INTPTLAT'], errors='coerce')
-                df['INTPTLON'] = pd.to_numeric(df['INTPTLON'], errors='coerce')
-
             features = ['AGEP', 'PINCP', 'HHT', 'SCHL']
             scaler = StandardScaler()
             scaled_features = scaler.fit_transform(df[features])
@@ -176,7 +142,6 @@ if execute_btn:
             kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
             df['Cluster'] = kmeans.fit_predict(scaled_features)
             
-            # --- Generate Personas via Gemini ---
             summary_stats = df.groupby('Cluster').agg({
                 'PINCP': 'mean',
                 'AGEP': 'mean',
@@ -200,32 +165,11 @@ if execute_btn:
 if st.session_state['data'] is not None:
     df = st.session_state['data']
     persona_map = st.session_state['persona_map']
-    
-    # Map persona names back to the main dataframe for plotting
     df['Persona Name'] = df['Cluster'].map(lambda x: persona_map[x]['name'])
     
     st.divider()
     st.subheader("📊 Cluster Visualizations")
     
-    # --- Geographic Map ---
-    if 'INTPTLAT' in df.columns:
-        st.write("### Geographic Distribution")
-        # Sample for performance on the map
-        map_sample = df.sample(min(5000, len(df)))
-        fig_map = px.scatter_mapbox(
-            map_sample,
-            lat="INTPTLAT",
-            lon="INTPTLON",
-            color="Persona Name",
-            size_max=10,
-            zoom=5,
-            mapbox_style="carto-positron",
-            height=600,
-            title="Persona Clustering by Location (PUMA Centroids)"
-        )
-        st.plotly_chart(fig_map, use_container_width=True)
-
-    # --- Scatter Plot ---
     plot_vars = {'Age': 'AGEP', 'Income': 'PINCP', 'Education': 'Education Level', 'Household Type': 'Household Type'}
     combinations = list(itertools.combinations(plot_vars.keys(), 2))
     selected_combo = st.selectbox("Select Graph to Show:", [f"{x} vs {y}" for x, y in combinations])
@@ -244,7 +188,49 @@ if st.session_state['data'] is not None:
         category_orders={'Education Level': EDU_ORDER}
     )
     st.plotly_chart(fig, use_container_width=True)
-    
+
+    # --- NEW: Map Visualization Section ---
+    st.divider()
+    st.subheader("🗺️ Geographic Persona Distribution")
+    try:
+        # Load your coordinates file
+        geo_df = pd.read_csv('puma_coordinates.csv')
+        # Ensure data types match for merging
+        geo_df['state'] = geo_df['state'].astype(int)
+        geo_df['PUMA'] = geo_df['PUMA'].astype(int)
+        
+        # Merge clustering results with coordinates based on state FIPS and PUMA ID
+        current_fips = int(STATE_FIPS[selected_state])
+        state_geo = geo_df[geo_df['state'] == current_fips]
+        
+        # Sample for mapping to keep it responsive
+        map_df = df.sample(min(3000, len(df))).copy()
+        map_df = map_df.merge(state_geo[['PUMA', 'IntPtLat', 'IntPtLon', 'pumaName']], on='PUMA', how='left')
+        
+        # Drop rows that couldn't be mapped
+        map_df = map_df.dropna(subset=['IntPtLat', 'IntPtLon'])
+
+        if not map_df.empty:
+            fig_map = px.scatter_mapbox(
+                map_df,
+                lat="IntPtLat",
+                lon="IntPtLon",
+                color="Persona Name",
+                hover_name="pumaName",
+                hover_data={"IntPtLat": False, "IntPtLon": False, "Persona Name": True, "Age Range": True},
+                zoom=5,
+                height=600,
+                title=f"Geographic Distribution of Personas in {selected_state}"
+            )
+            fig_map.update_layout(mapbox_style="carto-positron")
+            st.plotly_chart(fig_map, use_container_width=True)
+        else:
+            st.info("Could not find matching PUMA coordinates for this state in puma_coordinates.csv.")
+    except FileNotFoundError:
+        st.error("puma_coordinates.csv not found. Please upload it to use the mapping feature.")
+    except Exception as e:
+        st.error(f"Error generating map: {e}")
+
     # --- Summary Table ---
     st.divider()
     st.subheader("📋 Persona Summaries")
@@ -263,57 +249,7 @@ if st.session_state['data'] is not None:
     final_summary['Avg Age'] = final_summary['AGEP'].round().astype(int)
     
     display_cols = ['Persona Name', 'Persona Description', 'Avg Income ($)', 'Avg Age', 'Education Level', 'Household Type']
-    
-    st.table(
-        final_summary[display_cols].style.hide(axis="index")
-    )
-
-    # --- NEW SECTION: CSV Coordinate Map ---
-    st.divider()
-    st.subheader("🗺️ Detailed Persona Map (From CSV Coordinates)")
-    
-    try:
-        # Load the user-provided CSV
-        puma_coords_df = pd.read_csv('puma_coordinates.csv')
-        
-        # Ensure data types match for merging (PUMA and State FIPS)
-        puma_coords_df['PUMA'] = puma_coords_df['PUMA'].astype(str).str.zfill(5)
-        puma_coords_df['state'] = puma_coords_df['state'].astype(str).str.zfill(2)
-        
-        # Filter CSV to the selected state only
-        current_fips = STATE_FIPS[selected_state]
-        state_coords = puma_coords_df[puma_coords_df['state'] == current_fips].copy()
-        
-        if not state_coords.empty:
-            # Merge the cluster results with the CSV coordinates
-            # We group the main df by PUMA to find the dominant persona in each area
-            puma_persona_map = df.groupby('PUMA')['Persona Name'].agg(lambda x: x.mode()[0]).reset_index()
-            
-            merged_map_df = state_coords.merge(puma_persona_map, on='PUMA', how='inner')
-            
-            if not merged_map_df.empty:
-                fig_csv_map = px.scatter_mapbox(
-                    merged_map_df,
-                    lat="IntPtLat",
-                    lon="IntPtLon",
-                    color="Persona Name",
-                    hover_name="pumaName",
-                    hover_data=["County", "PUMA"],
-                    zoom=6,
-                    mapbox_style="carto-positron",
-                    height=700,
-                    title=f"Geographic Distribution of Personas in {selected_state}"
-                )
-                st.plotly_chart(fig_csv_map, use_container_width=True)
-            else:
-                st.info("No matching PUMA data found between Census results and the coordinate CSV for this state.")
-        else:
-            st.warning(f"No coordinate data found in CSV for state FIPS: {current_fips}")
-            
-    except FileNotFoundError:
-        st.error("The file 'puma_coordinates.csv' was not found. Please upload it to the directory.")
-    except Exception as e:
-        st.error(f"An error occurred while generating the CSV map: {e}")
+    st.table(final_summary[display_cols].style.hide(axis="index"))
 
 elif st.session_state['data'] is None:
     pass

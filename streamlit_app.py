@@ -268,5 +268,52 @@ if st.session_state['data'] is not None:
         final_summary[display_cols].style.hide(axis="index")
     )
 
+    # --- NEW SECTION: CSV Coordinate Map ---
+    st.divider()
+    st.subheader("🗺️ Detailed Persona Map (From CSV Coordinates)")
+    
+    try:
+        # Load the user-provided CSV
+        puma_coords_df = pd.read_csv('puma_coordinates.csv')
+        
+        # Ensure data types match for merging (PUMA and State FIPS)
+        puma_coords_df['PUMA'] = puma_coords_df['PUMA'].astype(str).str.zfill(5)
+        puma_coords_df['state'] = puma_coords_df['state'].astype(str).str.zfill(2)
+        
+        # Filter CSV to the selected state only
+        current_fips = STATE_FIPS[selected_state]
+        state_coords = puma_coords_df[puma_coords_df['state'] == current_fips].copy()
+        
+        if not state_coords.empty:
+            # Merge the cluster results with the CSV coordinates
+            # We group the main df by PUMA to find the dominant persona in each area
+            puma_persona_map = df.groupby('PUMA')['Persona Name'].agg(lambda x: x.mode()[0]).reset_index()
+            
+            merged_map_df = state_coords.merge(puma_persona_map, on='PUMA', how='inner')
+            
+            if not merged_map_df.empty:
+                fig_csv_map = px.scatter_mapbox(
+                    merged_map_df,
+                    lat="IntPtLat",
+                    lon="IntPtLon",
+                    color="Persona Name",
+                    hover_name="pumaName",
+                    hover_data=["County", "PUMA"],
+                    zoom=6,
+                    mapbox_style="carto-positron",
+                    height=700,
+                    title=f"Geographic Distribution of Personas in {selected_state}"
+                )
+                st.plotly_chart(fig_csv_map, use_container_width=True)
+            else:
+                st.info("No matching PUMA data found between Census results and the coordinate CSV for this state.")
+        else:
+            st.warning(f"No coordinate data found in CSV for state FIPS: {current_fips}")
+            
+    except FileNotFoundError:
+        st.error("The file 'puma_coordinates.csv' was not found. Please upload it to the directory.")
+    except Exception as e:
+        st.error(f"An error occurred while generating the CSV map: {e}")
+
 elif st.session_state['data'] is None:
     pass

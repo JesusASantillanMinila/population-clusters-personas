@@ -1444,8 +1444,8 @@ state,stab,PUMA,pumaName,County,County2,IntPtLat,IntPtLon
 35,NM,706,Albuquerque SW,Bernalillo NM,,35.01898,-106.73272
 35,NM,800,"Valencia County, Torrance County & East Mountain",Valencia NM,Bernalillo NM,34.731155,-106.107508
 35,NM,900,Southwest New Mexico,Otero NM,Grant NM,33.186293,-107.199838
-35,NM,1001,Doña Ana County (Outer),Dona Ana NM,,32.351346,-106.837274
-35,NM,1002,"Doña Ana County Central--Las Cruces, Mesilla Cities & University Park",Dona Ana NM,,32.35254,-106.684667
+35,NM,1001,Dona Ana County (Outer),Dona Ana NM,,32.351346,-106.837274
+35,NM,1002,"Dona Ana County Central--Las Cruces, Mesilla Cities & University Park",Dona Ana NM,,32.35254,-106.684667
 35,NM,1100,Lea and Eddy County,Lea NM,Eddy NM,32.633899,-103.849377
 36,NY,100,St. Lawrence County,St. Lawrence NY,,44.495552,-75.06935
 36,NY,200,"Clinton, Franklin, Essex & Hamilton Counties",Clinton NY,Franklin NY,44.220325,-74.095007
@@ -2462,25 +2462,25 @@ state,stab,PUMA,pumaName,County,County2,IntPtLat,IntPtLon
 56,WY,400,"Natrona, Carbon, Converse & Albany Counties",Natrona WY,Albany WY,42.244276,-106.384342
 56,WY,500,"Sweetwater, Fremont, Uinta, Sublette & Hot Springs Counties--Wind River Reservat",Sweetwater WY,Fremont WY,42.407131,-109.065119
 72,PR,100,"Aguadilla, Aguada & Moca",Aguadilla Municipio PR,Aguada Municipio PR,18.402295,-67.167707
-72,PR,200,"Mayagüez, Añasco & Hormigueros",Mayag�ez Municipio PR,A�asco Municipio PR,18.191178,-67.512776
-72,PR,300,"Cabo Rojo, San Germán & Lajas",Cabo Rojo Municipio PR,San Germ�n Municipio PR,18.024211,-67.118169
-72,PR,400,"Yauco, Sabana Grande & Peñuelas",Yauco Municipio PR,Sabana Grande Municipio PR,18.019982,-66.843827
+72,PR,200,"Mayagnez, Anasco & Hormigueros",Mayagüez Municipio PR,Añasco Municipio PR,18.191178,-67.512776
+72,PR,300,"Cabo Rojo, San German & Lajas",Cabo Rojo Municipio PR,San Germán Municipio PR,18.024211,-67.118169
+72,PR,400,"Yauco, Sabana Grande & Penuelas",Yauco Municipio PR,Sabana Grande Municipio PR,18.019982,-66.843827
 72,PR,500,Ponce,Ponce Municipio PR,,18.007962,-66.625409
-72,PR,600,"Juana Díaz, Coamo & Villalba",Juana D�az Municipio PR,Coamo Municipio PR,18.028275,-66.42758
+72,PR,600,"Juana Di­az, Coamo & Villalba",Juana Díaz Municipio PR,Coamo Municipio PR,18.028275,-66.42758
 72,PR,700,"Guayama, Salinas & Patillas",Guayama Municipio PR,Salinas Municipio PR,17.980207,-66.110842
 72,PR,800,"Humacao, Fajardo & Islas Municipios",Humacao Municipio PR,Fajardo Municipio PR,18.21579,-65.545406
-72,PR,900,"Río Grande, Canóvanas & Loíza",R�o Grande Municipio PR,Can�vanas Municipio PR,18.390616,-65.823595
+72,PR,900,"Rio Grande, Canovanas & Loi­za",Río Grande Municipio PR,Canóvanas Municipio PR,18.390616,-65.823595
 72,PR,1000,Carolina,Carolina Municipio PR,,18.396587,-65.968433
 72,PR,1101,San Juan Norte,San Juan Municipio PR,,18.461145,-66.078527
 72,PR,1102,San Juan Sur,San Juan Municipio PR,,18.363665,-66.052972
-72,PR,1200,Guaynabo & Cataño,Guaynabo Municipio PR,Cata�o Municipio PR,18.363453,-66.119099
-72,PR,1300,Bayamón,Bayam�n Municipio PR,,18.349645,-66.16832
+72,PR,1200,Guaynabo & Catano,Guaynabo Municipio PR,Cataño Municipio PR,18.363453,-66.119099
+72,PR,1300,Bayamon,Bayamón Municipio PR,,18.349645,-66.16832
 72,PR,1400,Toa Baja & Dorado,Toa Baja Municipio PR,Dorado Municipio PR,18.465531,-66.230725
 72,PR,1500,"Toa Alta, Corozal & Naranjito",Toa Alta Municipio PR,Corozal Municipio PR,18.316199,-66.283583
 72,PR,1600,"Vega Baja, Vega Alta & Morovis",Vega Baja Municipio PR,Vega Alta Municipio PR,18.412992,-66.387175
-72,PR,1700,"Arecibo, Manatí & Barceloneta",Arecibo Municipio PR,Manat� Municipio PR,18.438445,-66.610551
+72,PR,1700,"Arecibo, Manati­ & Barceloneta",Arecibo Municipio PR,Manatí Municipio PR,18.438445,-66.610551
 72,PR,1800,"Isabela, Hatillo & Camuy",Isabela Municipio PR,Hatillo Municipio PR,18.460127,-66.912317
-72,PR,1900,"San Sebastián, Utuado & Lares",San Sebasti�n Municipio PR,Utuado Municipio PR,18.249292,-66.737292
+72,PR,1900,"San Sebastian, Utuado & Lares",San Sebastián Municipio PR,Utuado Municipio PR,18.249292,-66.737292
 72,PR,2000,"Cayey, Cidra & Barranquitas",Cayey Municipio PR,Cidra Municipio PR,18.172453,-66.200841
 72,PR,2100,Caguas,Caguas Municipio PR,,18.211908,-66.050795
 72,PR,2200,Trujillo Alto & Gurabo,Trujillo Alto Municipio PR,Gurabo Municipio PR,18.296581,-65.987702

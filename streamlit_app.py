@@ -163,7 +163,7 @@ if execute_btn:
             
             st.session_state['persona_map'] = persona_dict
             st.session_state['data'] = df
-            st.success(f"Clusters analyzed and AI personas generated!")
+            st.success(f"Analysis Finalized")
         else:
             st.warning("No data found.")
 

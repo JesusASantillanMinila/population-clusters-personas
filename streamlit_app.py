@@ -104,7 +104,7 @@ def process_data(df):
 
 # --- 3. Main Streamlit App ---
 
-st.title("👥 US Population Personas Clustering")
+st.title("👥 US Population Segmenter")
 
 if "CENSUS_API_KEY" in st.secrets:
     api_key = st.secrets["CENSUS_API_KEY"]

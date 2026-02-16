@@ -247,16 +247,19 @@ if st.session_state['data'] is not None:
     for idx, row in summary_data.iterrows():
         p_id = int(row['Cluster'])
         col_idx = idx % 3
+        
+        # Calculate Income in K (e.g., 85400 -> 85K)
+        income_k = f"${int(row['PINCP'] / 1000)}K"
+        
         with persona_cols[col_idx]:
             with st.container(border=True):
                 st.markdown(f"### {persona_map[p_id]['name']}")
                 st.caption(persona_map[p_id]['desc'])
                 st.write("---")
                 c1, c2 = st.columns(2)
-                c1.metric("Avg Income", f"${int(row['PINCP']):,}")
+                c1.metric("Avg Income", income_k)
                 c2.metric("Avg Age", f"{int(row['AGEP'])}")
                 st.markdown(f"**Top Education:** {row['Education Level']}")
                 st.markdown(f"**Top Household:** {row['Household Type']}")
-
 elif st.session_state['data'] is None:
     pass

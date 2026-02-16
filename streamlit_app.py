@@ -8,7 +8,6 @@ import itertools
 import google.generativeai as genai
 import json
 import re
-import numpy as np
 
 # --- 1. Configuration & Dictionaries ---
 st.set_page_config(page_title="US Population Personas Clustering", layout="wide")
@@ -20,7 +19,7 @@ if "GOOGLE_API_KEY" in st.secrets:
 else:
     st.error("GOOGLE_API_KEY not found in secrets.")
 
-# Load State FIPS from CSV instead of hardcoding
+# Load State FIPS from CSV
 @st.cache_data
 def load_fips_data():
     try:
@@ -51,7 +50,11 @@ HHT_MAP = {
 # --- 2. Helper Functions ---
 
 def generate_personas_batch(summary_stats_df):
+    """
+    Combines all cluster data into one prompt to use only 1 Gemini API call.
+    """
     cluster_info = summary_stats_df.to_string(index=False)
+    
     prompt = f"""
     Based on the following demographic data for multiple population clusters:
     {cluster_info}
@@ -109,72 +112,21 @@ else:
     st.error("CENSUS_API_KEY not found in secrets.")
     st.stop()
 
-# Initialize session state
-if 'elbow_fig' not in st.session_state:
-    st.session_state['elbow_fig'] = None
-if 'suggested_k' not in st.session_state:
-    st.session_state['suggested_k'] = 3
-
-def on_state_change():
-    """Triggered when the state selection changes to calculate elbow immediately."""
-    with st.spinner(f"Calculating optimal clusters for {st.session_state.selected_state}..."):
-        fips = STATE_FIPS[st.session_state.selected_state]
-        raw_df = fetch_pums_data(fips, api_key)
-        if not raw_df.empty:
-            df = process_data(raw_df)
-            features = ['AGEP', 'PINCP', 'HHT', 'SCHL']
-            scaler = StandardScaler()
-            scaled_features = scaler.fit_transform(df[features])
-            
-            wcss = []
-            k_range = range(2, 9)
-            for i in k_range:
-                km = KMeans(n_clusters=i, random_state=42, n_init=10)
-                km.fit(scaled_features)
-                wcss.append(km.inertia_)
-            
-            # Simple Knee Detection: Point with max distance from line connecting start and end
-            x = np.array(list(k_range))
-            y = np.array(wcss)
-            line_vec = np.array([x[-1] - x[0], y[-1] - y[0]])
-            line_vec_norm = line_vec / np.sqrt(np.sum(line_vec**2))
-            vec_from_first = np.column_stack([x - x[0], y - y[0]])
-            scalar_prod = np.sum(vec_from_first * line_vec_norm, axis=1)
-            vec_to_line = vec_from_first - np.outer(scalar_prod, line_vec_norm)
-            dist_to_line = np.sqrt(np.sum(vec_to_line**2, axis=1))
-            st.session_state['suggested_k'] = int(x[np.argmax(dist_to_line)])
-
-            fig_elbow = px.line(x=list(k_range), y=wcss, markers=True, 
-                                title=f"Elbow Method for {st.session_state.selected_state}",
-                                labels={'x': 'Number of Clusters (k)', 'y': 'WCSS'})
-            fig_elbow.add_vline(x=st.session_state['suggested_k'], line_dash="dash", line_color="green", annotation_text="Suggested k")
-            st.session_state['elbow_fig'] = fig_elbow
-
 with st.expander("Configuration", expanded=True):
-    col1, col2 = st.columns([1, 1.5])
+    
+    col1, col2 = st.columns(2)
     with col1:
         st.markdown("""
         **Instructions:**
-        1. Select a **US State**.
-        2. View the **Elbow Graph** to determine optimal $k$.
-        3. Choose the **Number of Clusters** and **Execute**.
+        1. Select a **US State** from the dropdown.
+        2. Choose the **Number of Clusters** (groups) to identify.
+        3. Click **Execute** to analyze demographics and generate AI personas.
         """)
-        selected_state = st.selectbox("Select US State", list(STATE_FIPS.keys()), key="selected_state", on_change=on_state_change)
-        
-        # If the app just loaded and no elbow graph exists, run once for default state
-        if st.session_state['elbow_fig'] is None:
-            on_state_change()
-            st.rerun()
-
-        n_clusters = st.slider("Number of Clusters (k)", 2, 8, st.session_state['suggested_k'])
-        execute_btn = st.button("Execute Analysis", use_container_width=True)
-
     with col2:
-        if st.session_state['elbow_fig']:
-            st.plotly_chart(st.session_state['elbow_fig'], use_container_width=True)
-            st.success(f"💡 **Suggestion:** Based on the elbow curve, **k={st.session_state['suggested_k']}** appears optimal.")
-        else:
-            st.info("Select a state to see the Elbow Graph.")
+        selected_state = st.selectbox("Select US State", list(STATE_FIPS.keys()))
+        n_clusters = st.slider("Number of Clusters (k)", 2, 8, 3)
+        
+    execute_btn = st.button("Execute")
 
 if 'data' not in st.session_state:
     st.session_state['data'] = None
@@ -205,11 +157,14 @@ if execute_btn:
             summary_stats = summary_stats.rename(columns={'PINCP': 'Avg Income ($)', 'AGEP': 'Avg Age', 'Education Level': 'Most Common Education', 'Household Type': 'Most Common Household'})
             
             batch_results = generate_personas_batch(summary_stats)
-            persona_dict = {int(k): v for k, v in batch_results.items()}
+            
+            persona_dict = {}
+            for cluster_id, content in batch_results.items():
+                persona_dict[int(cluster_id)] = {"name": content['name'], "desc": content['desc']}
             
             st.session_state['persona_map'] = persona_dict
             st.session_state['data'] = df
-            st.rerun()
+            st.success(f"Clusters analyzed and AI personas generated!")
         else:
             st.warning("No data found.")
 
@@ -229,8 +184,11 @@ if st.session_state['data'] is not None:
     plot_df = df.sample(min(2000, len(df))).copy()
     
     fig = px.scatter(
-        plot_df, x=plot_vars[x_label], y=plot_vars[y_label],
-        color='Persona Name', title=f"Persona Distribution: {x_label} vs {y_label}",
+        plot_df, 
+        x=plot_vars[x_label], 
+        y=plot_vars[y_label],
+        color='Persona Name', 
+        title=f"Persona Distribution: {x_label} vs {y_label}",
         hover_data=['Education Level', 'Household Type'],
         labels={'AGEP': 'Age', 'PINCP': 'Annual Income', 'Persona Name': 'Market Persona'},
         category_orders={'Education Level': EDU_ORDER}
@@ -247,46 +205,63 @@ if st.session_state['data'] is not None:
         
         current_fips = int(STATE_FIPS[selected_state])
         state_geo = geo_df[geo_df['state'] == current_fips]
+        
         map_df = df.sample(min(3000, len(df))).copy()
         map_df = map_df.merge(state_geo[['PUMA', 'IntPtLat', 'IntPtLon', 'pumaName']], on='PUMA', how='left')
         map_df = map_df.dropna(subset=['IntPtLat', 'IntPtLon'])
 
         if not map_df.empty:
             fig_map = px.scatter_mapbox(
-                map_df, lat="IntPtLat", lon="IntPtLon", color="Persona Name",
-                hover_name="pumaName", zoom=5, height=600,
+                map_df,
+                lat="IntPtLat",
+                lon="IntPtLon",
+                color="Persona Name",
+                hover_name="pumaName",
+                hover_data={"IntPtLat": False, "IntPtLon": False, "Persona Name": True, "Age Range": True},
+                zoom=5,
+                height=600,
                 title=f"Geographic Distribution of Personas in {selected_state}"
             )
             fig_map.update_layout(mapbox_style="carto-positron")
             st.plotly_chart(fig_map, use_container_width=True)
+        else:
+            st.info("Could not find matching PUMA coordinates for this state in puma_coordinates.csv.")
+    except FileNotFoundError:
+        st.error("puma_coordinates.csv not found. Please upload it to use the mapping feature.")
     except Exception as e:
-        st.info("Note: Map view requires a valid puma_coordinates.csv file.")
+        st.error(f"Error generating map: {e}")
 
-    # --- 2) Attractive Persona Summaries ---
+    # --- Summary Section (Updated to Containers) ---
     st.divider()
-    st.subheader("📋 Persona Detailed Profiles")
+    st.subheader("📋 Persona Summaries")
     
-    summary_data = df.groupby('Cluster').agg({
+    final_summary = df.groupby('Cluster').agg({
         'PINCP': 'mean',
         'AGEP': 'mean',
         'Education Level': lambda x: x.mode()[0],
         'Household Type': lambda x: x.mode()[0]
     }).reset_index()
 
-    persona_cols = st.columns(3)
-    for idx, row in summary_data.iterrows():
-        p_id = int(row['Cluster'])
-        col_idx = idx % 3
-        with persona_cols[col_idx]:
-            with st.container(border=True):
-                st.markdown(f"### {persona_map[p_id]['name']}")
-                st.caption(persona_map[p_id]['desc'])
-                st.write("---")
-                c1, c2 = st.columns(2)
-                c1.metric("Avg Income", f"${int(row['PINCP']):,}")
-                c2.metric("Avg Age", f"{int(row['AGEP'])}")
-                st.markdown(f"**Top Education:** {row['Education Level']}")
-                st.markdown(f"**Top Household:** {row['Household Type']}")
+    final_summary['Persona Name'] = final_summary['Cluster'].map(lambda x: persona_map[x]['name'])
+    final_summary['Persona Description'] = final_summary['Cluster'].map(lambda x: persona_map[x]['desc'])
+    
+    final_summary['Avg Income ($)'] = final_summary['PINCP'].round().astype(int).apply(lambda x: f"${x:,}")
+    final_summary['Avg Age'] = final_summary['AGEP'].round().astype(int)
+
+    # Display each persona in a dynamic container card
+    for _, row in final_summary.iterrows():
+        with st.container(border=True):
+            col_text, col_stats = st.columns([2, 1])
+            
+            with col_text:
+                st.markdown(f"### {row['Persona Name']}")
+                st.write(row['Persona Description'])
+                
+            with col_stats:
+                st.metric("Avg. Income", row['Avg Income ($)'])
+                st.metric("Avg. Age", row['Avg Age'])
+                st.caption(f"**Education:** {row['Education Level']}")
+                st.caption(f"**Household:** {row['Household Type']}")
 
 elif st.session_state['data'] is None:
     pass

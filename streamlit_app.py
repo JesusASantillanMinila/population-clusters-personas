@@ -113,8 +113,6 @@ else:
     st.stop()
 
 with st.expander("Configuration", expanded=True):
-
-    
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("""
@@ -194,6 +192,8 @@ if st.session_state['data'] is not None:
         labels={'AGEP': 'Age', 'PINCP': 'Annual Income', 'Persona Name': 'Market Persona'},
         category_orders={'Education Level': EDU_ORDER}
     )
+    
+    fig.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5))
     st.plotly_chart(fig, use_container_width=True)
 
     # --- Map Visualization Section ---
@@ -224,6 +224,8 @@ if st.session_state['data'] is not None:
                 title=f"Geographic Distribution of Personas in {selected_state}"
             )
             fig_map.update_layout(mapbox_style="carto-positron")
+            # Update map legend to be underneath
+            fig_map.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.05, xanchor="center", x=0.5))
             st.plotly_chart(fig_map, use_container_width=True)
         else:
             st.info("Could not find matching PUMA coordinates for this state in puma_coordinates.csv.")
@@ -248,7 +250,6 @@ if st.session_state['data'] is not None:
         p_id = int(row['Cluster'])
         col_idx = idx % 3
         
-        # Calculate Income in K (e.g., 85400 -> 85K)
         income_k = f"${int(row['PINCP'] / 1000)}K"
         
         with persona_cols[col_idx]:

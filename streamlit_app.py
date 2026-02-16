@@ -53,7 +53,6 @@ def generate_personas_batch(summary_stats_df):
     """
     Combines all cluster data into one prompt to use only 1 Gemini API call.
     """
-    # Create a string representation of the clusters
     cluster_info = summary_stats_df.to_string(index=False)
     
     prompt = f"""
@@ -71,7 +70,6 @@ def generate_personas_batch(summary_stats_df):
     """
     try:
         response = model.generate_content(prompt)
-        # Clean markdown code blocks if present
         json_text = re.sub(r"```json|```", "", response.text).strip()
         return json.loads(json_text)
     except Exception as e:
@@ -80,7 +78,6 @@ def generate_personas_batch(summary_stats_df):
 
 @st.cache_data
 def fetch_pums_data(state_fips, api_key):
-    # Added PUMA to the fetch request to allow for mapping
     base_url = "https://api.census.gov/data/2022/acs/acs1/pums"
     params = {"get": "AGEP,PINCP,HHT,SCHL,PUMA", "for": f"state:{state_fips}", "key": api_key}
     try:
@@ -88,7 +85,6 @@ def fetch_pums_data(state_fips, api_key):
         response.raise_for_status()
         data = response.json()
         df = pd.DataFrame(data[1:], columns=data[0])
-        # Ensure numeric types
         cols = ['AGEP', 'PINCP', 'HHT', 'SCHL', 'PUMA']
         for c in cols:
             df[c] = pd.to_numeric(df[c], errors='coerce')
@@ -116,21 +112,29 @@ else:
     st.error("CENSUS_API_KEY not found in secrets.")
     st.stop()
 
+# Initialize session state for elbow data
+if 'elbow_fig' not in st.session_state:
+    st.session_state['elbow_fig'] = None
+
 with st.expander("Configuration", expanded=True):
-    st.markdown("""
-    **Instructions:**
-    1. Select a **US State** from the dropdown.
-    2. Choose the **Number of Clusters** (groups) to identify.
-    3. Click **Execute** to analyze demographics and generate AI personas.
-    """)
-    
-    col1, col2 = st.columns(2)
+    col1, col2 = st.columns([1, 1.5])
     with col1:
+        st.markdown("""
+        **Instructions:**
+        1. Select a **US State**.
+        2. View the **Elbow Graph** to determine optimal $k$.
+        3. Choose the **Number of Clusters** and **Execute**.
+        """)
         selected_state = st.selectbox("Select US State", list(STATE_FIPS.keys()))
-    with col2:
         n_clusters = st.slider("Number of Clusters (k)", 2, 8, 3)
-        
-    execute_btn = st.button("Execute")
+        execute_btn = st.button("Execute Analysis", use_container_width=True)
+
+    with col2:
+        if st.session_state['elbow_fig']:
+            st.plotly_chart(st.session_state['elbow_fig'], use_container_width=True)
+            st.markdown("💡 **Tip:** Look for the 'elbow' (the point where the line starts to flatten). This suggests the most efficient number of clusters for this dataset.")
+        else:
+            st.info("The Elbow Graph will appear here after you click 'Execute' for the first time.")
 
 if 'data' not in st.session_state:
     st.session_state['data'] = None
@@ -148,6 +152,20 @@ if execute_btn:
             scaler = StandardScaler()
             scaled_features = scaler.fit_transform(df[features])
             
+            # --- 1) Elbow Method Calculation ---
+            wcss = []
+            k_range = range(2, 9)
+            for i in k_range:
+                km = KMeans(n_clusters=i, random_state=42, n_init=10)
+                km.fit(scaled_features)
+                wcss.append(km.inertia_)
+            
+            fig_elbow = px.line(x=list(k_range), y=wcss, markers=True, 
+                                title="Elbow Method for Optimal Clusters",
+                                labels={'x': 'Number of Clusters (k)', 'y': 'WCSS'})
+            st.session_state['elbow_fig'] = fig_elbow
+            
+            # Perform actual clustering with selected k
             kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
             df['Cluster'] = kmeans.fit_predict(scaled_features)
             
@@ -160,17 +178,12 @@ if execute_btn:
             
             summary_stats = summary_stats.rename(columns={'PINCP': 'Avg Income ($)', 'AGEP': 'Avg Age', 'Education Level': 'Most Common Education', 'Household Type': 'Most Common Household'})
             
-            # --- UPDATED: Batch API Call ---
             batch_results = generate_personas_batch(summary_stats)
-            
-            # Map results to persona_dict (ensuring keys are integers)
-            persona_dict = {}
-            for cluster_id, content in batch_results.items():
-                persona_dict[int(cluster_id)] = {"name": content['name'], "desc": content['desc']}
+            persona_dict = {int(k): v for k, v in batch_results.items()}
             
             st.session_state['persona_map'] = persona_dict
             st.session_state['data'] = df
-            st.success(f"Clusters analyzed and AI personas generated!")
+            st.rerun() # Refresh to show elbow graph in col2
         else:
             st.warning("No data found.")
 
@@ -190,11 +203,8 @@ if st.session_state['data'] is not None:
     plot_df = df.sample(min(2000, len(df))).copy()
     
     fig = px.scatter(
-        plot_df, 
-        x=plot_vars[x_label], 
-        y=plot_vars[y_label],
-        color='Persona Name', 
-        title=f"Persona Distribution: {x_label} vs {y_label}",
+        plot_df, x=plot_vars[x_label], y=plot_vars[y_label],
+        color='Persona Name', title=f"Persona Distribution: {x_label} vs {y_label}",
         hover_data=['Education Level', 'Household Type'],
         labels={'AGEP': 'Age', 'PINCP': 'Annual Income', 'Persona Name': 'Market Persona'},
         category_orders={'Education Level': EDU_ORDER}
@@ -205,63 +215,53 @@ if st.session_state['data'] is not None:
     st.divider()
     st.subheader("🗺️ Geographic Persona Distribution")
     try:
-        # Load your coordinates file
         geo_df = pd.read_csv('puma_coordinates.csv')
-        # Ensure data types match for merging
         geo_df['state'] = geo_df['state'].astype(int)
         geo_df['PUMA'] = geo_df['PUMA'].astype(int)
         
-        # Merge clustering results with coordinates based on state FIPS and PUMA ID
         current_fips = int(STATE_FIPS[selected_state])
         state_geo = geo_df[geo_df['state'] == current_fips]
-        
-        # Sample for mapping to keep it responsive
         map_df = df.sample(min(3000, len(df))).copy()
         map_df = map_df.merge(state_geo[['PUMA', 'IntPtLat', 'IntPtLon', 'pumaName']], on='PUMA', how='left')
-        
-        # Drop rows that couldn't be mapped
         map_df = map_df.dropna(subset=['IntPtLat', 'IntPtLon'])
 
         if not map_df.empty:
             fig_map = px.scatter_mapbox(
-                map_df,
-                lat="IntPtLat",
-                lon="IntPtLon",
-                color="Persona Name",
-                hover_name="pumaName",
-                hover_data={"IntPtLat": False, "IntPtLon": False, "Persona Name": True, "Age Range": True},
-                zoom=5,
-                height=600,
+                map_df, lat="IntPtLat", lon="IntPtLon", color="Persona Name",
+                hover_name="pumaName", zoom=5, height=600,
                 title=f"Geographic Distribution of Personas in {selected_state}"
             )
             fig_map.update_layout(mapbox_style="carto-positron")
             st.plotly_chart(fig_map, use_container_width=True)
-        else:
-            st.info("Could not find matching PUMA coordinates for this state in puma_coordinates.csv.")
-    except FileNotFoundError:
-        st.error("puma_coordinates.csv not found. Please upload it to use the mapping feature.")
     except Exception as e:
-        st.error(f"Error generating map: {e}")
+        st.info("Note: Map view requires a valid puma_coordinates.csv file.")
 
-    # --- Summary Table ---
+    # --- 2) Attractive Persona Summaries ---
     st.divider()
-    st.subheader("📋 Persona Summaries")
+    st.subheader("📋 Persona Detailed Profiles")
     
-    final_summary = df.groupby('Cluster').agg({
+    summary_data = df.groupby('Cluster').agg({
         'PINCP': 'mean',
         'AGEP': 'mean',
         'Education Level': lambda x: x.mode()[0],
         'Household Type': lambda x: x.mode()[0]
     }).reset_index()
 
-    final_summary['Persona Name'] = final_summary['Cluster'].map(lambda x: persona_map[x]['name'])
-    final_summary['Persona Description'] = final_summary['Cluster'].map(lambda x: persona_map[x]['desc'])
-    
-    final_summary['Avg Income ($)'] = final_summary['PINCP'].round().astype(int).apply(lambda x: f"${x:,}")
-    final_summary['Avg Age'] = final_summary['AGEP'].round().astype(int)
-    
-    display_cols = ['Persona Name', 'Persona Description', 'Avg Income ($)', 'Avg Age', 'Education Level', 'Household Type']
-    st.table(final_summary[display_cols].style.hide(axis="index"))
+    # Layout personas in columns (max 3 per row)
+    persona_cols = st.columns(3)
+    for idx, row in summary_data.iterrows():
+        p_id = int(row['Cluster'])
+        col_idx = idx % 3
+        with persona_cols[col_idx]:
+            with st.container(border=True):
+                st.markdown(f"### {persona_map[p_id]['name']}")
+                st.caption(persona_map[p_id]['desc'])
+                st.write("---")
+                c1, c2 = st.columns(2)
+                c1.metric("Avg Income", f"${int(row['PINCP']):,}")
+                c2.metric("Avg Age", f"{int(row['AGEP'])}")
+                st.markdown(f"**Top Education:** {row['Education Level']}")
+                st.markdown(f"**Top Household:** {row['Household Type']}")
 
 elif st.session_state['data'] is None:
     pass

@@ -10,7 +10,7 @@ import json
 import re
 
 # --- 1. Configuration & Dictionaries ---
-st.set_page_config(page_title="US Population Personas Clustering", layout="wide")
+st.set_page_config(page_title="👥 US Population Personas Clustering", layout="wide")
 
 # Configure Gemini
 if "GOOGLE_API_KEY" in st.secrets:

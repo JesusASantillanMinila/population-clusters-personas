@@ -6,6 +6,8 @@ from sklearn.preprocessing import StandardScaler
 import plotly.express as px
 import itertools
 import google.generativeai as genai
+import json
+import re
 
 # --- 1. Configuration & Dictionaries ---
 st.set_page_config(page_title="US Population Personas Clustering", layout="wide")
@@ -13,7 +15,7 @@ st.set_page_config(page_title="US Population Personas Clustering", layout="wide"
 # Configure Gemini
 if "GOOGLE_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-    model = genai.GenerativeModel('gemini-2.5-flash')
+    model = genai.GenerativeModel('gemini-2.5-flash') 
 else:
     st.error("GOOGLE_API_KEY not found in secrets.")
 
@@ -47,27 +49,34 @@ HHT_MAP = {
 
 # --- 2. Helper Functions ---
 
-def generate_persona(row):
+def generate_personas_batch(summary_stats_df):
+    """
+    Combines all cluster data into one prompt to use only 1 Gemini API call.
+    """
+    # Create a string representation of the clusters
+    cluster_info = summary_stats_df.to_string(index=False)
+    
     prompt = f"""
-    Based on the following demographic data of a population cluster:
-    - Average Income: {row['Avg Income ($)']}
-    - Average Age: {row['Avg Age']}
-    - Most Common Education: {row['Most Common Education']}
-    - Most Common Household: {row['Most Common Household']}
-     
-    Create a short, catchy 'Persona Name' (2-4 words) and a brief 2-sentence description of their lifestyle.
-    Format your response exactly like this:
-    Name: [Name Here]
-    Description: [Description Here]
+    Based on the following demographic data for multiple population clusters:
+    {cluster_info}
+    
+    For EACH Cluster ID, create a short, catchy 'Persona Name' (2-4 words) and a brief 2-sentence description of their lifestyle.
+    
+    Return the response ONLY as a JSON object where the keys are the Cluster IDs.
+    Example Format:
+    {{
+      "0": {{"name": "Name Here", "desc": "Description Here"}},
+      "1": {{"name": "Name Here", "desc": "Description Here"}}
+    }}
     """
     try:
         response = model.generate_content(prompt)
-        text = response.text
-        name = text.split("Name:")[1].split("Description:")[0].strip()
-        desc = text.split("Description:")[1].strip()
-        return name, desc
-    except Exception:
-        return f"Cluster {row['Cluster']}", "No description available."
+        # Clean markdown code blocks if present
+        json_text = re.sub(r"```json|```", "", response.text).strip()
+        return json.loads(json_text)
+    except Exception as e:
+        st.error(f"Batch generation failed: {e}")
+        return {str(i): {"name": f"Cluster {i}", "desc": "No description available."} for i in summary_stats_df['Cluster']}
 
 @st.cache_data
 def fetch_pums_data(state_fips, api_key):
@@ -151,10 +160,13 @@ if execute_btn:
             
             summary_stats = summary_stats.rename(columns={'PINCP': 'Avg Income ($)', 'AGEP': 'Avg Age', 'Education Level': 'Most Common Education', 'Household Type': 'Most Common Household'})
             
+            # --- UPDATED: Batch API Call ---
+            batch_results = generate_personas_batch(summary_stats)
+            
+            # Map results to persona_dict (ensuring keys are integers)
             persona_dict = {}
-            for _, row in summary_stats.iterrows():
-                name, desc = generate_persona(row)
-                persona_dict[int(row['Cluster'])] = {"name": name, "desc": desc}
+            for cluster_id, content in batch_results.items():
+                persona_dict[int(cluster_id)] = {"name": content['name'], "desc": content['desc']}
             
             st.session_state['persona_map'] = persona_dict
             st.session_state['data'] = df
@@ -189,7 +201,7 @@ if st.session_state['data'] is not None:
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # --- NEW: Map Visualization Section ---
+    # --- Map Visualization Section ---
     st.divider()
     st.subheader("🗺️ Geographic Persona Distribution")
     try:

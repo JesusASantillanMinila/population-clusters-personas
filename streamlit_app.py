@@ -10,7 +10,7 @@ import json
 import re
 
 # --- 1. Configuration & Dictionaries ---
-st.set_page_config(page_title="👥 US Population Personas Clustering", layout="wide")
+st.set_page_config(page_title="US Population Personas Clustering", layout="wide")
 
 # Configure Gemini
 if "GOOGLE_API_KEY" in st.secrets:
@@ -104,7 +104,7 @@ def process_data(df):
 
 # --- 3. Main Streamlit App ---
 
-st.title("US Population Personas Clustering")
+st.title("👥 US Population Personas Clustering")
 
 if "CENSUS_API_KEY" in st.secrets:
     api_key = st.secrets["CENSUS_API_KEY"]

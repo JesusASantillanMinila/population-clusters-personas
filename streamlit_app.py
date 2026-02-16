@@ -113,6 +113,7 @@ else:
     st.stop()
 
 with st.expander("Configuration", expanded=True):
+
     
     col1, col2 = st.columns(2)
     with col1:
@@ -231,37 +232,31 @@ if st.session_state['data'] is not None:
     except Exception as e:
         st.error(f"Error generating map: {e}")
 
-    # --- Summary Section (Updated to Containers) ---
+    # --- Summary Section (Updated to 3-Column Container Layout) ---
     st.divider()
     st.subheader("📋 Persona Summaries")
     
-    final_summary = df.groupby('Cluster').agg({
+    summary_data = df.groupby('Cluster').agg({
         'PINCP': 'mean',
         'AGEP': 'mean',
         'Education Level': lambda x: x.mode()[0],
         'Household Type': lambda x: x.mode()[0]
     }).reset_index()
 
-    final_summary['Persona Name'] = final_summary['Cluster'].map(lambda x: persona_map[x]['name'])
-    final_summary['Persona Description'] = final_summary['Cluster'].map(lambda x: persona_map[x]['desc'])
-    
-    final_summary['Avg Income ($)'] = final_summary['PINCP'].round().astype(int).apply(lambda x: f"${x:,}")
-    final_summary['Avg Age'] = final_summary['AGEP'].round().astype(int)
-
-    # Display each persona in a dynamic container card
-    for _, row in final_summary.iterrows():
-        with st.container(border=True):
-            col_text, col_stats = st.columns([2, 1])
-            
-            with col_text:
-                st.markdown(f"### {row['Persona Name']}")
-                st.write(row['Persona Description'])
-                
-            with col_stats:
-                st.metric("Avg. Income", row['Avg Income ($)'])
-                st.metric("Avg. Age", row['Avg Age'])
-                st.caption(f"**Education:** {row['Education Level']}")
-                st.caption(f"**Household:** {row['Household Type']}")
+    persona_cols = st.columns(3)
+    for idx, row in summary_data.iterrows():
+        p_id = int(row['Cluster'])
+        col_idx = idx % 3
+        with persona_cols[col_idx]:
+            with st.container(border=True):
+                st.markdown(f"### {persona_map[p_id]['name']}")
+                st.caption(persona_map[p_id]['desc'])
+                st.write("---")
+                c1, c2 = st.columns(2)
+                c1.metric("Avg Income", f"${int(row['PINCP']):,}")
+                c2.metric("Avg Age", f"{int(row['AGEP'])}")
+                st.markdown(f"**Top Education:** {row['Education Level']}")
+                st.markdown(f"**Top Household:** {row['Household Type']}")
 
 elif st.session_state['data'] is None:
     pass

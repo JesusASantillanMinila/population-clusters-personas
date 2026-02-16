@@ -8,6 +8,7 @@ import itertools
 import google.generativeai as genai
 import json
 import re
+import numpy as np
 
 # --- 1. Configuration & Dictionaries ---
 st.set_page_config(page_title="US Population Personas Clustering", layout="wide")
@@ -50,11 +51,7 @@ HHT_MAP = {
 # --- 2. Helper Functions ---
 
 def generate_personas_batch(summary_stats_df):
-    """
-    Combines all cluster data into one prompt to use only 1 Gemini API call.
-    """
     cluster_info = summary_stats_df.to_string(index=False)
-    
     prompt = f"""
     Based on the following demographic data for multiple population clusters:
     {cluster_info}
@@ -112,9 +109,46 @@ else:
     st.error("CENSUS_API_KEY not found in secrets.")
     st.stop()
 
-# Initialize session state for elbow data
+# Initialize session state
 if 'elbow_fig' not in st.session_state:
     st.session_state['elbow_fig'] = None
+if 'suggested_k' not in st.session_state:
+    st.session_state['suggested_k'] = 3
+
+def on_state_change():
+    """Triggered when the state selection changes to calculate elbow immediately."""
+    with st.spinner(f"Calculating optimal clusters for {st.session_state.selected_state}..."):
+        fips = STATE_FIPS[st.session_state.selected_state]
+        raw_df = fetch_pums_data(fips, api_key)
+        if not raw_df.empty:
+            df = process_data(raw_df)
+            features = ['AGEP', 'PINCP', 'HHT', 'SCHL']
+            scaler = StandardScaler()
+            scaled_features = scaler.fit_transform(df[features])
+            
+            wcss = []
+            k_range = range(2, 9)
+            for i in k_range:
+                km = KMeans(n_clusters=i, random_state=42, n_init=10)
+                km.fit(scaled_features)
+                wcss.append(km.inertia_)
+            
+            # Simple Knee Detection: Point with max distance from line connecting start and end
+            x = np.array(list(k_range))
+            y = np.array(wcss)
+            line_vec = np.array([x[-1] - x[0], y[-1] - y[0]])
+            line_vec_norm = line_vec / np.sqrt(np.sum(line_vec**2))
+            vec_from_first = np.column_stack([x - x[0], y - y[0]])
+            scalar_prod = np.sum(vec_from_first * line_vec_norm, axis=1)
+            vec_to_line = vec_from_first - np.outer(scalar_prod, line_vec_norm)
+            dist_to_line = np.sqrt(np.sum(vec_to_line**2, axis=1))
+            st.session_state['suggested_k'] = int(x[np.argmax(dist_to_line)])
+
+            fig_elbow = px.line(x=list(k_range), y=wcss, markers=True, 
+                                title=f"Elbow Method for {st.session_state.selected_state}",
+                                labels={'x': 'Number of Clusters (k)', 'y': 'WCSS'})
+            fig_elbow.add_vline(x=st.session_state['suggested_k'], line_dash="dash", line_color="green", annotation_text="Suggested k")
+            st.session_state['elbow_fig'] = fig_elbow
 
 with st.expander("Configuration", expanded=True):
     col1, col2 = st.columns([1, 1.5])
@@ -125,16 +159,22 @@ with st.expander("Configuration", expanded=True):
         2. View the **Elbow Graph** to determine optimal $k$.
         3. Choose the **Number of Clusters** and **Execute**.
         """)
-        selected_state = st.selectbox("Select US State", list(STATE_FIPS.keys()))
-        n_clusters = st.slider("Number of Clusters (k)", 2, 8, 3)
+        selected_state = st.selectbox("Select US State", list(STATE_FIPS.keys()), key="selected_state", on_change=on_state_change)
+        
+        # If the app just loaded and no elbow graph exists, run once for default state
+        if st.session_state['elbow_fig'] is None:
+            on_state_change()
+            st.rerun()
+
+        n_clusters = st.slider("Number of Clusters (k)", 2, 8, st.session_state['suggested_k'])
         execute_btn = st.button("Execute Analysis", use_container_width=True)
 
     with col2:
         if st.session_state['elbow_fig']:
             st.plotly_chart(st.session_state['elbow_fig'], use_container_width=True)
-            st.markdown("💡 **Tip:** Look for the 'elbow' (the point where the line starts to flatten). This suggests the most efficient number of clusters for this dataset.")
+            st.success(f"💡 **Suggestion:** Based on the elbow curve, **k={st.session_state['suggested_k']}** appears optimal.")
         else:
-            st.info("The Elbow Graph will appear here after you click 'Execute' for the first time.")
+            st.info("Select a state to see the Elbow Graph.")
 
 if 'data' not in st.session_state:
     st.session_state['data'] = None
@@ -152,20 +192,6 @@ if execute_btn:
             scaler = StandardScaler()
             scaled_features = scaler.fit_transform(df[features])
             
-            # --- 1) Elbow Method Calculation ---
-            wcss = []
-            k_range = range(2, 9)
-            for i in k_range:
-                km = KMeans(n_clusters=i, random_state=42, n_init=10)
-                km.fit(scaled_features)
-                wcss.append(km.inertia_)
-            
-            fig_elbow = px.line(x=list(k_range), y=wcss, markers=True, 
-                                title="Elbow Method for Optimal Clusters",
-                                labels={'x': 'Number of Clusters (k)', 'y': 'WCSS'})
-            st.session_state['elbow_fig'] = fig_elbow
-            
-            # Perform actual clustering with selected k
             kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
             df['Cluster'] = kmeans.fit_predict(scaled_features)
             
@@ -183,7 +209,7 @@ if execute_btn:
             
             st.session_state['persona_map'] = persona_dict
             st.session_state['data'] = df
-            st.rerun() # Refresh to show elbow graph in col2
+            st.rerun()
         else:
             st.warning("No data found.")
 
@@ -247,7 +273,6 @@ if st.session_state['data'] is not None:
         'Household Type': lambda x: x.mode()[0]
     }).reset_index()
 
-    # Layout personas in columns (max 3 per row)
     persona_cols = st.columns(3)
     for idx, row in summary_data.iterrows():
         p_id = int(row['Cluster'])

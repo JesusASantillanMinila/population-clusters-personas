@@ -15,7 +15,7 @@ st.set_page_config(page_title="US Population Personas Clustering", layout="wide"
 # Configure Gemini
 if "GOOGLE_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-    model = genai.GenerativeModel('gemini-2.5-flash') 
+    model = genai.GenerativeModel('gemini-2.5-pro') 
 else:
     st.error("GOOGLE_API_KEY not found in secrets.")
 

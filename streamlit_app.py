@@ -274,7 +274,7 @@ if st.session_state['data'] is not None:
                 c1.metric("Avg Income", income_k)
                 c2.metric("Avg Age", f"{int(row['AGEP'])}")
                 c3.metric("% of Pop.", cluster_pct)
-                st.markdown(f"**Top Education:** {row['Education Level']}")
-                st.markdown(f"**Top Household:** {row['Household Type']}")
+                st.markdown(f"**Education:** {row['Education Level']}")
+                st.markdown(f"**Household Type:** {row['Household Type']}")
 elif st.session_state['data'] is None:
     pass

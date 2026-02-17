@@ -52,6 +52,7 @@ HHT_MAP = {
 def generate_personas_batch(summary_stats_df):
     """
     Combines all cluster data into one prompt to use only 1 Gemini API call.
+    Includes error handling for API quota limits.
     """
     cluster_info = summary_stats_df.to_string(index=False)
     
@@ -69,13 +70,20 @@ def generate_personas_batch(summary_stats_df):
     }}
     """
     try:
-        # Fixed model name for standard compatibility
         response = model.generate_content(prompt)
         json_text = re.sub(r"```json|```", "", response.text).strip()
         return json.loads(json_text)
+        
     except Exception as e:
-        st.error(f"Batch generation failed: {e}")
-        return {str(i): {"name": f"Cluster {i}", "desc": "No description available."} for i in summary_stats_df['Cluster']}
+        # Check if the error is related to quota/rate limits
+        error_msg = str(e).lower()
+        if "429" in error_msg or "resource_exhausted" in error_msg or "quota" in error_msg:
+            st.error("⚠️ **AI Token Limit Reached:** You have exhausted the allocated AI tokens for the current 24-hour period. Please wait and try rerunning the model later.")
+        else:
+            st.error(f"Batch generation failed: {e}")
+            
+        # Fallback to generic names so the app doesn't crash
+        return {str(i): {"name": f"Cluster {i}", "desc": "AI description unavailable due to limit."} for i in summary_stats_df['Cluster']}
 
 @st.cache_data
 def fetch_pums_data(state_fips, api_key):
